@@ -1,0 +1,3286 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>뽀잉보드 — 손그림 메모 · 마인드맵 · 표 · 그래프</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- 손그림 감성 한글/영문 폰트 (Gaegu, Patrick Hand, Gowun Dodum) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&family=Patrick+Hand&display=swap" rel="stylesheet" />
+
+  <style>
+    /* =========================================================================
+       1. 기본 폰트 및 순수 연한 모눈종이(격자) 배경
+       ========================================================================= */
+    :root {
+      --spring-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --spring-soft: cubic-bezier(0.22, 1.4, 0.36, 1);
+      --ink: #2c3440;
+      --ink-soft: #5c6675;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Gaegu', 'Patrick Hand', 'Gowun Dodum', cursive, sans-serif;
+      background-color: #fcfbf7;
+      color: var(--ink);
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    /* 무한 캔버스 뷰포트: 따뜻한 연한 모눈종이 격자 */
+    #viewport {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      touch-action: none;
+      cursor: crosshair;
+      background-color: #fcfbf7;
+      background-image:
+        linear-gradient(to right, rgba(130, 152, 182, 0.20) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(130, 152, 182, 0.20) 1px, transparent 1px),
+        linear-gradient(to right, rgba(130, 152, 182, 0.085) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(130, 152, 182, 0.085) 1px, transparent 1px);
+      background-size: 120px 120px, 120px 120px, 24px 24px, 24px 24px;
+      background-position: 0px 0px;
+    }
+
+    #viewport.is-panning {
+      cursor: grabbing;
+    }
+
+    /* 월드 레이어 (줌/패닝 변환 대상) */
+    #world {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+
+    /* SVG 연결선 레이어 */
+    #edges-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      overflow: visible;
+      pointer-events: none;
+    }
+
+    #edges-layer .edge-hit {
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+
+    /* =========================================================================
+       2. 뽀잉뽀잉(Bouncy & Jelly) 탄성 애니메이션
+       ========================================================================= */
+    @keyframes boingSpawn {
+      0%   { opacity: 0; transform: scale(0.32) rotate(-4deg) translateY(14px); }
+      45%  { opacity: 1; transform: scale(1.10, 0.91) rotate(1.5deg) translateY(-4px); }
+      72%  { transform: scale(0.95, 1.05) rotate(-0.8deg) translateY(1px); }
+      88%  { transform: scale(1.02, 0.99) rotate(0.2deg); }
+      100% { opacity: 1; transform: scale(1, 1) rotate(0deg) translateY(0); }
+    }
+
+    @keyframes toolbarPop {
+      0%   { opacity: 0; transform: translate(-50%, 6px) scale(0.75); }
+      65%  { opacity: 1; transform: translate(-50%, -2px) scale(1.05); }
+      100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+    }
+
+    @keyframes barGrow {
+      0%   { transform: scaleY(0); }
+      65%  { transform: scaleY(1.09); }
+      100% { transform: scaleY(1); }
+    }
+
+    .animate-boing-spawn {
+      animation: boingSpawn 0.54s var(--spring-soft) forwards;
+    }
+
+    .animate-toolbar-pop {
+      animation: toolbarPop 0.3s var(--spring-bounce) forwards;
+    }
+
+    /* 손그림 느낌의 유기적 테두리 유틸리티 */
+    .sketch-pill {
+      border-radius: 255px 18px 225px 18px / 18px 225px 18px 255px;
+      border: 1.8px solid #3c4654;
+      box-shadow: 2.5px 3px 0px rgba(44, 52, 64, 0.14);
+    }
+
+    .sketch-btn {
+      transition: transform 0.26s var(--spring-bounce), background-color 0.16s ease;
+    }
+    .sketch-btn:hover {
+      transform: translateY(-1.5px) scale(1.07);
+    }
+    .sketch-btn:active {
+      transform: translateY(1px) scale(0.90);
+    }
+
+    /* =========================================================================
+       3. 노드 래퍼 · 즉시 드래그 vs 편집 모드 제어
+       ========================================================================= */
+    .node-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      will-change: transform;
+      touch-action: none;
+      cursor: grab;
+    }
+
+    .node-wrapper:active {
+      cursor: grabbing;
+    }
+
+    /*
+      핵심 UX 개선:
+      편집 모드가 아닐 때는 모든 입력 필드의 포인터 이벤트를 비활성화하여
+      메모·말풍선·표·그래프 어디를 눌러도 즉시 부드럽게 드래그되도록 함!
+      (한 번 톡 탭/클릭하면 is-editing이 켜지면서 바로 해당 위치 입력 시작)
+    */
+    .node-wrapper:not(.is-editing) .edit-field {
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .node-wrapper.is-editing {
+      cursor: default;
+    }
+
+    .node-wrapper.is-editing .edit-field {
+      pointer-events: auto;
+      user-select: text;
+      -webkit-user-select: text;
+      touch-action: pan-y;
+    }
+
+    /* 선택 시 은은한 연필 하이라이트 글로우 */
+    .node-wrapper.is-selected .sketch-bg-svg {
+      filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.28));
+    }
+
+    .node-wrapper.is-drop-target .node-card {
+      transform: scale(1.045);
+      filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.45));
+    }
+
+    .node-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.22s var(--spring-bounce), filter 0.2s ease;
+    }
+
+    /* 손그림 SVG 배경 레이어 */
+    .sketch-bg-svg {
+      position: absolute;
+      inset: -6px;
+      width: calc(100% + 12px);
+      height: calc(100% + 12px);
+      pointer-events: none;
+      overflow: visible;
+      z-index: 0;
+    }
+
+    .node-body {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* 선택 시 모바일에서도 크기 조절 핸들이 잘 보이도록 표시 */
+    .node-wrapper.is-selected .resize-handle {
+      opacity: 0.72;
+    }
+
+    /* 세로 크기를 직접 조절했을 때 그래프 SVG가 영역에 맞춰 유연하게 확대/축소 */
+    .node-card.has-custom-height .chart-canvas svg {
+      height: 100%;
+      max-height: 100%;
+    }
+
+    /* 연결/가지치기 (+) 핸들 */
+    .branch-handle {
+      transition: transform 0.26s var(--spring-bounce), opacity 0.2s ease;
+      border-radius: 55% 45% 58% 42% / 44% 56% 44% 56%;
+    }
+    .branch-handle:hover {
+      transform: scale(1.26) rotate(8deg);
+    }
+    .branch-handle:active {
+      transform: scale(0.88);
+    }
+
+    /* 얇은 스크롤바 */
+    .thin-scroll::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    .thin-scroll::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.35);
+      border-radius: 999px;
+    }
+    .thin-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    /* 손그림 그래프 막대 애니메이션 */
+    .chart-bar-g {
+      transform-box: fill-box;
+      transform-origin: bottom center;
+      animation: barGrow 0.48s var(--spring-bounce) forwards;
+    }
+
+    /* 손그림 표 점선 구분선 */
+    .sketch-table td, .sketch-table th {
+      border-color: rgba(60, 70, 84, 0.26);
+    }
+
+    /* 깔끔한 UI 보조 폰트 (아주 작은 라벨용) */
+    .ui-sans {
+      font-family: 'Gowun Dodum', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- =========================================================================
+       순수 연한 모눈종이 무한 캔버스 (하단 UI 없이 배경 클릭 -> 바로 메모!)
+       ========================================================================= -->
+  <div id="viewport" aria-label="손그림 모눈종이 캔버스">
+    <div id="world">
+      <!-- 손그림 마인드맵 연결선 레이어 -->
+      <svg id="edges-layer">
+        <g id="edges-group"></g>
+        <!-- 드래그 중인 고무줄 손그림 연결선 -->
+        <path id="temp-edge" d="" fill="none" stroke="#3b82f6" stroke-width="2.6" stroke-dasharray="7 6" stroke-linecap="round" class="hidden"></path>
+      </svg>
+
+      <!-- 노드 컨테이너 -->
+      <div id="nodes-layer"></div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       연결선 선택 시 뜨는 미니 끊기 버튼
+       ========================================================================= -->
+  <button id="edge-delete-btn" class="fixed z-40 hidden sketch-btn w-7 h-7 rounded-full bg-rose-500 text-white shadow-md flex items-center justify-center text-xs font-bold border-2 border-[#fcfbf7]" title="연결 끊기">
+    ✕
+  </button>
+
+  <!-- =========================================================================
+       우측 상단 초미니 점 3개(⋯) 메뉴
+       (저장·불러오기·내보내기·실행 취소/다시 실행을 모두 한곳에 수납)
+       ========================================================================= -->
+  <div class="fixed top-3 right-3 z-30 ui-sans">
+    <div class="relative">
+      <button id="btn-more" type="button" class="sketch-btn w-9 h-9 rounded-full bg-[#fcfbf7]/85 hover:bg-white text-slate-500 opacity-55 hover:opacity-100 flex items-center justify-center border border-slate-300/80 shadow-sm backdrop-blur-sm" title="보드 메뉴">
+        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </button>
+
+      <!-- 미니 팝오버 -->
+      <div id="more-popover" class="hidden absolute top-11 right-0 w-52 max-h-[calc(100vh-72px)] overflow-y-auto thin-scroll p-1.5 bg-[#fffef9]/95 backdrop-blur-md sketch-pill ui-sans text-xs font-medium text-slate-700 origin-top-right">
+        <button id="btn-undo" type="button" class="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left disabled:opacity-35">
+          <span>↩️ 되돌리기</span><span class="text-[10px] text-slate-400">Ctrl+Z</span>
+        </button>
+        <button id="btn-redo" type="button" class="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left disabled:opacity-35">
+          <span>↪️ 다시 실행</span><span class="text-[10px] text-slate-400">Ctrl+Y</span>
+        </button>
+        <div class="h-px bg-slate-200/70 my-1"></div>
+        <button id="btn-save-browser" type="button" class="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left">
+          <span>💾 브라우저에 저장</span><span class="text-[10px] text-slate-400">Ctrl+S</span>
+        </button>
+        <button id="btn-open-storage" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-sky-50/80 text-left">
+          <span>📂</span><span>불러오기 (보관함)</span>
+        </button>
+        <button id="btn-export" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-emerald-50/80 text-left">
+          <span>📤</span><span>파일로 내보내기</span>
+        </button>
+        <button id="btn-import" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-slate-100/80 text-left">
+          <span>📄</span><span>JSON 파일 불러오기</span>
+        </button>
+        <div class="h-px bg-slate-200/70 my-1"></div>
+        <button id="btn-fit" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left">
+          <span>🔍</span><span>전체 한눈에 보기</span>
+        </button>
+        <button id="btn-auto-layout" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left">
+          <span>✨</span><span>마인드맵 깔끔 정리</span>
+        </button>
+        <button id="btn-sound" type="button" class="w-full flex items-center justify-between px-3 py-2 rounded-xl hover:bg-amber-50/80 text-left">
+          <span>🔊 뽀잉 효과음</span><span id="sound-status" class="text-[11px] font-bold text-sky-600">ON</span>
+        </button>
+        <div class="h-px bg-slate-200/70 my-1"></div>
+        <button id="btn-load-sample" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-sky-50/80 hover:text-sky-700 text-left">
+          <span>✏️</span><span>예시 스케치 보기</span>
+        </button>
+        <button id="btn-clear-all" type="button" class="w-full flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-rose-50 hover:text-rose-600 text-left">
+          <span>🧹</span><span>모눈종이 비우기</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 숨겨진 JSON 파일 업로드 -->
+  <input id="file-import-input" type="file" accept=".json" class="hidden" />
+
+  <!-- =========================================================================
+       손그림 감성 토스트 & 확인 모달 (alert / confirm 대체)
+       ========================================================================= -->
+  <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none opacity-0 transition-all duration-300 translate-y-[-12px]">
+    <div id="toast-inner" class="px-4 py-1.5 bg-[#2c3440] text-[#fcfbf7] text-base font-bold sketch-pill flex items-center gap-1.5 shadow-lg" style="background-color: rgba(44, 52, 64, 0.95); color: #fcfbf7; border-color: #1e2530;"></div>
+  </div>
+
+  <div id="confirm-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/20 backdrop-blur-[2px] p-4">
+    <div class="animate-boing-spawn w-full max-w-xs bg-[#fffef9] sketch-pill p-5 text-center">
+      <div id="confirm-icon" class="text-3xl mb-1.5">✏️</div>
+      <h3 id="confirm-title" class="text-xl font-bold text-slate-800 mb-1">확인해 주세요</h3>
+      <p id="confirm-desc" class="ui-sans text-xs text-slate-500 mb-5 leading-relaxed"></p>
+      <div class="flex items-center gap-2 ui-sans">
+        <button id="confirm-cancel" class="sketch-btn flex-1 py-2 rounded-2xl bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-300/80">취소</button>
+        <button id="confirm-ok" class="sketch-btn flex-1 py-2 rounded-2xl bg-rose-500 text-white text-xs font-semibold border border-rose-700/50 shadow-sm">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       브라우저 저장소 보관함 모달 (여러 스케치 저장 / 불러오기 / 파일 내보내기)
+       ========================================================================= -->
+  <div id="storage-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/20 backdrop-blur-[2px] p-4">
+    <div class="animate-boing-spawn w-full max-w-md bg-[#fffef9] sketch-pill p-5 flex flex-col max-h-[85vh]">
+      <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-2xl">📂</span>
+          <div>
+            <h3 class="text-xl font-bold text-slate-800 leading-tight">브라우저 보관함</h3>
+            <p class="ui-sans text-[11px] text-slate-500">이 브라우저에 여러 스케치를 저장하고 언제든 불러오세요</p>
+          </div>
+        </div>
+        <button id="storage-close-btn" type="button" class="sketch-btn w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center text-sm font-bold" title="닫기">✕</button>
+      </div>
+
+      <!-- 새 이름으로 브라우저 저장 -->
+      <div class="p-3 rounded-2xl bg-amber-50/75 border border-dashed border-amber-400/70 mb-3 ui-sans">
+        <label for="storage-name-input" class="block text-[11px] font-bold text-amber-900/80 mb-1.5">현재 스케치를 브라우저에 새 이름으로 저장</label>
+        <div class="flex items-center gap-1.5">
+          <input id="storage-name-input" type="text" maxlength="40" placeholder="스케치 이름 (예: 주간 아이디어)" class="flex-1 min-w-0 px-3 py-2 rounded-xl bg-white border border-slate-300 text-xs text-slate-700 focus:outline-none focus:border-amber-500" />
+          <button id="btn-modal-save-new" type="button" class="sketch-btn shrink-0 px-3.5 py-2 rounded-xl bg-[#2c3440] text-white text-xs font-bold shadow-sm">
+            💾 저장
+          </button>
+        </div>
+      </div>
+
+      <!-- 저장된 보드 목록 -->
+      <div class="flex items-center justify-between mb-1.5 ui-sans">
+        <span class="text-[11px] font-bold text-slate-500">저장된 스케치 목록</span>
+        <span id="storage-count-badge" class="text-[11px] font-bold text-sky-600">0개</span>
+      </div>
+      <div id="storage-list" class="thin-scroll flex-1 overflow-y-auto space-y-2 pr-0.5 min-h-[120px] max-h-[40vh]"></div>
+
+      <!-- 하단 파일 불러오기 / 내보내기 바로가기 -->
+      <div class="mt-4 pt-3 border-t border-dashed border-slate-300/80 flex items-center gap-2 ui-sans">
+        <button id="btn-modal-import-file" type="button" class="sketch-btn flex-1 py-2.5 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-bold border border-sky-300/70 flex items-center justify-center gap-1.5">
+          <span>📄</span><span>파일에서 불러오기</span>
+        </button>
+        <button id="btn-modal-export-file" type="button" class="sketch-btn flex-1 py-2.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-300/70 flex items-center justify-center gap-1.5">
+          <span>📤</span><span>파일로 내보내기</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       메인 JavaScript 애플리케이션
+       ========================================================================= -->
+  <script>
+    (() => {
+      'use strict';
+
+      /* -----------------------------------------------------------------------
+         1. 상수 및 손그림 형광펜(마커) 컬러 팔레트
+         ----------------------------------------------------------------------- */
+      const STORAGE_KEY = 'boingboard_sketch_v2';
+      const SAVED_SLOTS_KEY = 'boingboard_saved_slots_v1';
+
+      const COLOR_THEMES = {
+        paper:    { fill: '#fffefb', stroke: '#3a4250', accent: '#475569', dot: '#f5f2e9', soft: '#f1efe8', text: '#262d38' },
+        lemon:    { fill: '#fff9d6', stroke: '#4a3f28', accent: '#d97706', dot: '#fde68a', soft: '#fef3c7', text: '#3d3017' },
+        mint:     { fill: '#e6f9ef', stroke: '#29473a', accent: '#059669', dot: '#a7f3d0', soft: '#d1fae5', text: '#1d3b2f' },
+        sky:      { fill: '#e6f4ff', stroke: '#263e54', accent: '#0284c7', dot: '#bae6fd', soft: '#e0f2fe', text: '#1c3347' },
+        lavender: { fill: '#f3ebff', stroke: '#3c2d54', accent: '#7c3aed', dot: '#ddd6fe', soft: '#ede9fe', text: '#2f2147' },
+        peach:    { fill: '#ffe9ec', stroke: '#522c34', accent: '#e11d48', dot: '#fecdd3', soft: '#ffe4e6', text: '#472129' }
+      };
+
+      const CHART_PALETTE = ['#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#fb7185', '#38bdf8', '#f472b6', '#a3e635'];
+
+      /* -----------------------------------------------------------------------
+         2. 손그림(Sketch) SVG 경로 생성기 (결정적 난수로 일관된 삐뚤빼뚤 손맛!)
+         ----------------------------------------------------------------------- */
+      function mulberry32(seed) {
+        let a = seed >>> 0;
+        return function () {
+          a |= 0;
+          a = (a + 0x6D2B79F5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      const Sketch = {
+        // 한 번의 손그림 직선 (살짝 휘어지고 양 끝이 살짝 어긋난 펜선)
+        line(x1, y1, x2, y2, rng, rough = 1.5) {
+          const j = () => (rng() - 0.5) * rough * 2;
+          const mx = (x1 + x2) / 2 + j() * 1.4;
+          const my = (y1 + y2) / 2 + j() * 1.4;
+          return `M ${(x1 + j() * 0.6).toFixed(1)} ${(y1 + j() * 0.6).toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${(x2 + j() * 0.6).toFixed(1)} ${(y2 + j() * 0.6).toFixed(1)}`;
+        },
+
+        // 손그림 메모/표/그래프용 삐뚤빼뚤 사각 프레임 (마커 채우기 + 2중 펜 외곽선)
+        rectPaths(w, h, seed, rough = 1.7) {
+          const rng = mulberry32(seed);
+          const p = 6; // SVG inset padding
+          const x = p, y = p;
+          const r = Math.min(18, w * 0.12, h * 0.2);
+
+          const j = (mul = 1) => (rng() - 0.5) * rough * 2 * mul;
+
+          // 부드러운 손그림 채우기 패스 (약간 비대칭적인 유기적 모서리)
+          const x0 = x + j(0.7), y0 = y + j(0.7);
+          const x1 = x + w + j(0.7), y1 = y + j(0.7);
+          const x2 = x + w + j(0.7), y2 = y + h + j(0.7);
+          const x3 = x + j(0.7), y3 = y + h + j(0.7);
+
+          const fillPath = [
+            `M ${(x0 + r).toFixed(1)} ${y0.toFixed(1)}`,
+            `Q ${(x + w * 0.5 + j(1.1)).toFixed(1)} ${(y + j(1.2)).toFixed(1)} ${(x1 - r).toFixed(1)} ${y1.toFixed(1)}`,
+            `Q ${(x1 + j(0.8)).toFixed(1)} ${(y1 + j(0.8)).toFixed(1)} ${x1.toFixed(1)} ${(y1 + r).toFixed(1)}`,
+            `Q ${(x + w + j(1.2)).toFixed(1)} ${(y + h * 0.5 + j(1.1)).toFixed(1)} ${x2.toFixed(1)} ${(y2 - r).toFixed(1)}`,
+            `Q ${(x2 + j(0.8)).toFixed(1)} ${(y2 + j(0.8)).toFixed(1)} ${(x2 - r).toFixed(1)} ${y2.toFixed(1)}`,
+            `Q ${(x + w * 0.5 + j(1.1)).toFixed(1)} ${(y + h + j(1.2)).toFixed(1)} ${(x3 + r).toFixed(1)} ${y3.toFixed(1)}`,
+            `Q ${(x3 + j(0.8)).toFixed(1)} ${(y3 + j(0.8)).toFixed(1)} ${x3.toFixed(1)} ${(y3 - r).toFixed(1)}`,
+            `Q ${(x + j(1.2)).toFixed(1)} ${(y + h * 0.5 + j(1.1)).toFixed(1)} ${x0.toFixed(1)} ${(y0 + r).toFixed(1)}`,
+            `Q ${(x0 + j(0.8)).toFixed(1)} ${(y0 + j(0.8)).toFixed(1)} ${(x0 + r).toFixed(1)} ${y0.toFixed(1)} Z`
+          ].join(' ');
+
+          // 두 번째 덧그린 펜선 (실제 손으로 두 번 쓱 그린 듯한 느낌)
+          const stroke2 = [
+            `M ${(x0 + r + j()).toFixed(1)} ${(y0 + j()).toFixed(1)}`,
+            `Q ${(x + w * 0.52 + j(1.3)).toFixed(1)} ${(y + j(1.4)).toFixed(1)} ${(x1 - r + j()).toFixed(1)} ${(y1 + j()).toFixed(1)}`,
+            `Q ${(x1 + j()).toFixed(1)} ${(y1 + j()).toFixed(1)} ${(x1 + j()).toFixed(1)} ${(y1 + r + j()).toFixed(1)}`,
+            `Q ${(x + w + j(1.4)).toFixed(1)} ${(y + h * 0.48 + j(1.3)).toFixed(1)} ${(x2 + j()).toFixed(1)} ${(y2 - r + j()).toFixed(1)}`,
+            `Q ${(x2 + j()).toFixed(1)} ${(y2 + j()).toFixed(1)} ${(x2 - r + j()).toFixed(1)} ${(y2 + j()).toFixed(1)}`,
+            `Q ${(x + w * 0.48 + j(1.3)).toFixed(1)} ${(y + h + j(1.4)).toFixed(1)} ${(x3 + r + j()).toFixed(1)} ${(y3 + j()).toFixed(1)}`,
+            `Q ${(x3 + j()).toFixed(1)} ${(y3 + j()).toFixed(1)} ${(x3 + j()).toFixed(1)} ${(y3 - r + j()).toFixed(1)}`,
+            `Q ${(x + j(1.4)).toFixed(1)} ${(y + h * 0.52 + j(1.3)).toFixed(1)} ${(x0 + j()).toFixed(1)} ${(y0 + r + j()).toFixed(1)}`,
+            `Q ${(x0 + j()).toFixed(1)} ${(y0 + j()).toFixed(1)} ${(x0 + r + j()).toFixed(1)} ${(y0 + j()).toFixed(1)}`
+          ].join(' ');
+
+          return { fillPath, stroke1: fillPath, stroke2 };
+        },
+
+        // 마인드맵 말풍선/구름 타원 손그림 (키워드에 펜으로 동그라미 친 듯한 느낌)
+        bubblePaths(w, h, seed) {
+          const rng = mulberry32(seed);
+          const p = 6;
+          const cx = p + w / 2;
+          const cy = p + h / 2;
+          const rx = w / 2;
+          const ry = h / 2;
+
+          const buildLoop = (rough, extraSweep = 0) => {
+            const steps = 16;
+            const pts = [];
+            for (let i = 0; i <= steps + extraSweep; i++) {
+              const angle = (i / steps) * Math.PI * 2 - Math.PI / 2;
+              // 타원보다 모서리가 살짝 둥근 슈퍼엘립스(squircle) 느낌으로 글자가 잘림 없이 들어감
+              const cos = Math.cos(angle);
+              const sin = Math.sin(angle);
+              const signX = cos >= 0 ? 1 : -1;
+              const signY = sin >= 0 ? 1 : -1;
+              const px = cx + signX * Math.pow(Math.abs(cos), 0.78) * rx + (rng() - 0.5) * rough * 2.4;
+              const py = cy + signY * Math.pow(Math.abs(sin), 0.78) * ry + (rng() - 0.5) * rough * 2.2;
+              pts.push({ x: px, y: py });
+            }
+
+            let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+            for (let i = 1; i < pts.length; i++) {
+              const prev = pts[i - 1];
+              const cur = pts[i];
+              const mx = (prev.x + cur.x) / 2;
+              const my = (prev.y + cur.y) / 2;
+              d += ` Q ${prev.x.toFixed(1)} ${prev.y.toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+            }
+            const last = pts[pts.length - 1];
+            d += ` L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
+            return d;
+          };
+
+          const fillPath = buildLoop(1.4, 0) + ' Z';
+          const stroke2 = buildLoop(1.9, 1);
+          return { fillPath, stroke1: fillPath, stroke2 };
+        },
+
+        // 손그림 화살표 팁 계산
+        arrowHead(tipX, tipY, fromX, fromY, seed) {
+          const rng = mulberry32(seed + 77);
+          const angle = Math.atan2(tipY - fromY, tipX - fromX);
+          const len = 10.5;
+          const a1 = angle - Math.PI * 0.82 + (rng() - 0.5) * 0.14;
+          const a2 = angle + Math.PI * 0.82 + (rng() - 0.5) * 0.14;
+          const x1 = tipX + Math.cos(a1) * len;
+          const y1 = tipY + Math.sin(a1) * len;
+          const x2 = tipX + Math.cos(a2) * len;
+          const y2 = tipY + Math.sin(a2) * len;
+          return `M ${x1.toFixed(1)} ${y1.toFixed(1)} Q ${((x1 + tipX) / 2 + (rng() - 0.5) * 2).toFixed(1)} ${((y1 + tipY) / 2 + (rng() - 0.5) * 2).toFixed(1)} ${tipX.toFixed(1)} ${tipY.toFixed(1)} Q ${((x2 + tipX) / 2 + (rng() - 0.5) * 2).toFixed(1)} ${((y2 + tipY) / 2 + (rng() - 0.5) * 2).toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+        }
+      };
+
+      /* -----------------------------------------------------------------------
+         3. Web Audio API 뽀잉뽀잉 사운드 엔진
+         ----------------------------------------------------------------------- */
+      const SoundEngine = {
+        ctx: null,
+        enabled: true,
+
+        init() {
+          if (!this.ctx) {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) this.ctx = new AudioCtx();
+          }
+          if (this.ctx && this.ctx.state === 'suspended') {
+            this.ctx.resume().catch(() => {});
+          }
+        },
+
+        play(type = 'pop') {
+          if (!this.enabled) return;
+          try {
+            this.init();
+            if (!this.ctx) return;
+
+            const now = this.ctx.currentTime;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+
+            if (type === 'spawn') {
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(290, now);
+              osc.frequency.exponentialRampToValueAtTime(640, now + 0.085);
+              osc.frequency.exponentialRampToValueAtTime(470, now + 0.16);
+              gain.gain.setValueAtTime(0.001, now);
+              gain.gain.linearRampToValueAtTime(0.10, now + 0.018);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+              osc.start(now);
+              osc.stop(now + 0.19);
+            } else if (type === 'boing') {
+              osc.type = 'triangle';
+              osc.frequency.setValueAtTime(230, now);
+              osc.frequency.exponentialRampToValueAtTime(510, now + 0.075);
+              osc.frequency.exponentialRampToValueAtTime(350, now + 0.16);
+              osc.frequency.exponentialRampToValueAtTime(425, now + 0.23);
+              gain.gain.setValueAtTime(0.001, now);
+              gain.gain.linearRampToValueAtTime(0.085, now + 0.015);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+              osc.start(now);
+              osc.stop(now + 0.26);
+            } else if (type === 'delete') {
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(430, now);
+              osc.frequency.exponentialRampToValueAtTime(160, now + 0.13);
+              gain.gain.setValueAtTime(0.075, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+              osc.start(now);
+              osc.stop(now + 0.15);
+            } else {
+              osc.type = 'sine';
+              osc.frequency.setValueAtTime(520, now);
+              osc.frequency.exponentialRampToValueAtTime(760, now + 0.05);
+              gain.gain.setValueAtTime(0.055, now);
+              gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+              osc.start(now);
+              osc.stop(now + 0.065);
+            }
+          } catch (e) {
+            // 오디오 컨텍스트 예외 무시
+          }
+        }
+      };
+
+      /* -----------------------------------------------------------------------
+         4. 전역 상태, 물리 엔진 & Undo 스택
+         ----------------------------------------------------------------------- */
+      const state = {
+        nodes: [],
+        edges: [],
+        panX: 0,
+        panY: 0,
+        zoom: 1,
+        selectedNodeId: null,
+        editingNodeId: null,
+        selectedEdgeId: null,
+        currentSlotId: null,
+        currentBoardName: ''
+      };
+
+      const undoStack = [];
+      const redoStack = [];
+      const MAX_UNDO = 25;
+
+      const nodePhysics = new Map();
+      let physicsRafId = null;
+
+      const viewportEl = document.getElementById('viewport');
+      const worldEl = document.getElementById('world');
+      const nodesLayerEl = document.getElementById('nodes-layer');
+      const edgesGroupEl = document.getElementById('edges-group');
+      const tempEdgeEl = document.getElementById('temp-edge');
+      const edgeDeleteBtnEl = document.getElementById('edge-delete-btn');
+      const morePopoverEl = document.getElementById('more-popover');
+
+      const nodeElements = new Map();
+
+      // 노드 크기 변화에 따라 손그림 테두리 SVG 자동 재계산
+      const nodeResizeObserver = typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(entries => {
+            for (const entry of entries) {
+              const wrapper = entry.target.closest('.node-wrapper');
+              if (!wrapper) continue;
+              const node = state.nodes.find(n => n.id === wrapper.dataset.id);
+              if (node) updateNodeSketch(node, wrapper);
+            }
+            renderEdges();
+          })
+        : null;
+
+      /* -----------------------------------------------------------------------
+         5. 유틸리티 함수
+         ----------------------------------------------------------------------- */
+      function genId(prefix = 'n') {
+        return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      }
+
+      function genSeed() {
+        return Math.floor(Math.random() * 999999) + 1;
+      }
+
+      function clamp(val, min, max) {
+        return Math.min(max, Math.max(min, val));
+      }
+
+      function screenToWorld(clientX, clientY) {
+        return {
+          x: (clientX - state.panX) / state.zoom,
+          y: (clientY - state.panY) / state.zoom
+        };
+      }
+
+      function worldToScreen(wx, wy) {
+        return {
+          x: wx * state.zoom + state.panX,
+          y: wy * state.zoom + state.panY
+        };
+      }
+
+      function escapeHtml(str) {
+        return String(str ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      let toastTimer = null;
+      function showToast(msg, icon = '✏️') {
+        const toast = document.getElementById('toast');
+        const inner = document.getElementById('toast-inner');
+        inner.innerHTML = `<span>${icon}</span><span>${escapeHtml(msg)}</span>`;
+        toast.classList.remove('opacity-0', 'translate-y-[-12px]');
+        toast.classList.add('opacity-100', 'translate-y-0');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          toast.classList.add('opacity-0', 'translate-y-[-12px]');
+          toast.classList.remove('opacity-100', 'translate-y-0');
+        }, 2000);
+      }
+
+      function showConfirm({ title, desc, icon = '✏️', okText = '확인', onConfirm }) {
+        const modal = document.getElementById('confirm-modal');
+        document.getElementById('confirm-title').textContent = title;
+        document.getElementById('confirm-desc').textContent = desc;
+        document.getElementById('confirm-icon').textContent = icon;
+        const okBtn = document.getElementById('confirm-ok');
+        const cancelBtn = document.getElementById('confirm-cancel');
+        okBtn.textContent = okText;
+
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        const cleanup = () => {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+          okBtn.onclick = null;
+          cancelBtn.onclick = null;
+        };
+
+        cancelBtn.onclick = () => {
+          SoundEngine.play('click');
+          cleanup();
+        };
+        okBtn.onclick = () => {
+          cleanup();
+          if (typeof onConfirm === 'function') onConfirm();
+        };
+      }
+
+      /* -----------------------------------------------------------------------
+         6. 저장 & Undo 관리
+         ----------------------------------------------------------------------- */
+      let saveTimeout = null;
+      function scheduleSave() {
+        clearTimeout(saveTimeout);
+        saveTimeout = setTimeout(() => {
+          saveWorkingStateNow();
+        }, 250);
+      }
+
+      // 현재 작업 상태를 브라우저 기본 영역에 즉시 기록
+      function saveWorkingStateNow() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            nodes: state.nodes,
+            edges: state.edges,
+            panX: state.panX,
+            panY: state.panY,
+            zoom: state.zoom,
+            currentSlotId: state.currentSlotId,
+            currentBoardName: state.currentBoardName
+          }));
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      // 브라우저 보관함 슬롯 목록 읽기 / 쓰기
+      function getSavedSlots() {
+        try {
+          const raw = localStorage.getItem(SAVED_SLOTS_KEY);
+          const parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function persistSavedSlots(slots) {
+        try {
+          localStorage.setItem(SAVED_SLOTS_KEY, JSON.stringify(slots));
+          return true;
+        } catch (e) {
+          showToast('브라우저 저장 공간이 부족해요. 파일로 내보내 주세요!', '⚠️');
+          return false;
+        }
+      }
+
+      function inferBoardName() {
+        if (state.currentBoardName && state.currentBoardName.trim()) {
+          return state.currentBoardName.trim();
+        }
+        const firstTitled = state.nodes.find(n => (n.title || '').trim());
+        if (firstTitled) return firstTitled.title.trim().slice(0, 26);
+        const firstContent = state.nodes.find(n => (n.content || '').trim());
+        if (firstContent) return firstContent.content.trim().split(/\r?\n/)[0].slice(0, 26);
+        return '내 손그림 스케치';
+      }
+
+      function formatSavedTime(ts) {
+        const d = new Date(ts || Date.now());
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mi = String(d.getMinutes()).padStart(2, '0');
+        return `${mm}/${dd} ${hh}:${mi}`;
+      }
+
+      // 저장 버튼 클릭 시 브라우저에 명시적으로 저장 (현재 슬롯 업데이트 또는 새 슬롯 생성)
+      function saveCurrentToBrowser({ asNew = false, customName = '', overwriteSlotId = null } = {}) {
+        const slots = getSavedSlots();
+        const name = (customName || '').trim() || inferBoardName();
+        const snapshot = {
+          nodes: JSON.parse(JSON.stringify(state.nodes)),
+          edges: JSON.parse(JSON.stringify(state.edges)),
+          panX: state.panX,
+          panY: state.panY,
+          zoom: state.zoom
+        };
+
+        let targetId = overwriteSlotId || (!asNew ? state.currentSlotId : null);
+        const existingIdx = targetId ? slots.findIndex(s => s.id === targetId) : -1;
+        const now = Date.now();
+
+        if (existingIdx >= 0) {
+          const updated = {
+            ...slots[existingIdx],
+            name: customName.trim() ? customName.trim() : slots[existingIdx].name,
+            updatedAt: now,
+            nodeCount: state.nodes.length,
+            edgeCount: state.edges.length,
+            data: snapshot
+          };
+          slots.splice(existingIdx, 1);
+          slots.unshift(updated);
+          state.currentSlotId = updated.id;
+          state.currentBoardName = updated.name;
+        } else {
+          const newSlot = {
+            id: genId('slot'),
+            name,
+            updatedAt: now,
+            nodeCount: state.nodes.length,
+            edgeCount: state.edges.length,
+            data: snapshot
+          };
+          slots.unshift(newSlot);
+          state.currentSlotId = newSlot.id;
+          state.currentBoardName = newSlot.name;
+        }
+
+        if (!persistSavedSlots(slots)) return;
+        saveWorkingStateNow();
+
+        // 메뉴 버튼 뽀잉 피드백
+        const moreBtn = document.getElementById('btn-more');
+        if (moreBtn) {
+          moreBtn.style.transform = 'scale(1.16)';
+          setTimeout(() => { moreBtn.style.transform = ''; }, 180);
+        }
+
+        SoundEngine.play('boing');
+        showToast(`"${state.currentBoardName}" 브라우저에 저장했어요!`, '💾');
+        renderStorageSlotsList();
+      }
+
+      // 브라우저 보관함에서 선택한 보드 불러오기
+      function loadSlotFromBrowser(slotId) {
+        const slots = getSavedSlots();
+        const slot = slots.find(s => s.id === slotId);
+        if (!slot || !slot.data) {
+          showToast('저장된 데이터를 찾을 수 없어요', '⚠️');
+          return;
+        }
+
+        pushUndo();
+        state.nodes = JSON.parse(JSON.stringify(slot.data.nodes || []));
+        state.edges = JSON.parse(JSON.stringify(slot.data.edges || []));
+        state.panX = typeof slot.data.panX === 'number' ? slot.data.panX : 0;
+        state.panY = typeof slot.data.panY === 'number' ? slot.data.panY : 0;
+        state.zoom = typeof slot.data.zoom === 'number' ? clamp(slot.data.zoom, 0.28, 2.4) : 1;
+        state.currentSlotId = slot.id;
+        state.currentBoardName = slot.name || '';
+
+        clearSelection();
+        renderAll();
+        updateViewportTransform();
+        saveWorkingStateNow();
+        closeStorageModal();
+        SoundEngine.play('spawn');
+        showToast(`"${slot.name}" 스케치를 불러왔어요!`, '📂');
+      }
+
+      // 브라우저 보관함 항목 삭제
+      function deleteSlotFromBrowser(slotId) {
+        const slots = getSavedSlots();
+        const target = slots.find(s => s.id === slotId);
+        if (!target) return;
+
+        showConfirm({
+          title: '저장된 스케치를 삭제할까요?',
+          desc: `"${target.name}" 항목이 브라우저 보관함에서 삭제됩니다.`,
+          icon: '🗑️',
+          okText: '삭제',
+          onConfirm: () => {
+            const next = getSavedSlots().filter(s => s.id !== slotId);
+            persistSavedSlots(next);
+            if (state.currentSlotId === slotId) {
+              state.currentSlotId = null;
+            }
+            renderStorageSlotsList();
+            SoundEngine.play('delete');
+            showToast('보관함에서 삭제했어요', '🗑️');
+          }
+        });
+      }
+
+      // JSON 파일로 내보내기
+      function exportBoardToFile() {
+        try {
+          const boardName = inferBoardName();
+          const safeName = boardName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_').slice(0, 30) || 'sketch';
+          const payload = {
+            name: boardName,
+            exportedAt: new Date().toISOString(),
+            nodes: state.nodes,
+            edges: state.edges,
+            panX: state.panX,
+            panY: state.panY,
+            zoom: state.zoom
+          };
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `boingboard_${safeName}_${new Date().toISOString().slice(0, 10)}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          SoundEngine.play('boing');
+          showToast('JSON 파일로 내보냈어요!', '📤');
+        } catch (e) {
+          showToast('파일 내보내기에 실패했어요', '⚠️');
+        }
+      }
+
+      // 브라우저 보관함 모달 열기 / 닫기 / 목록 렌더링
+      const storageModalEl = document.getElementById('storage-modal');
+      const storageNameInputEl = document.getElementById('storage-name-input');
+      const storageListEl = document.getElementById('storage-list');
+      const storageCountBadgeEl = document.getElementById('storage-count-badge');
+
+      function openStorageModal() {
+        closeMorePopover();
+        clearSelection();
+        storageNameInputEl.value = inferBoardName();
+        renderStorageSlotsList();
+        storageModalEl.classList.remove('hidden');
+        storageModalEl.classList.add('flex');
+        SoundEngine.play('click');
+      }
+
+      function closeStorageModal() {
+        storageModalEl.classList.add('hidden');
+        storageModalEl.classList.remove('flex');
+      }
+
+      function renderStorageSlotsList() {
+        const slots = getSavedSlots();
+        storageCountBadgeEl.textContent = `${slots.length}개`;
+
+        if (!slots.length) {
+          storageListEl.innerHTML = `
+            <div class="py-8 px-4 text-center rounded-2xl border border-dashed border-slate-300/80 bg-slate-50/50 ui-sans">
+              <div class="text-2xl mb-1">✏️</div>
+              <p class="text-xs font-bold text-slate-600">아직 브라우저에 저장된 스케치가 없어요</p>
+              <p class="text-[11px] text-slate-400 mt-1">위에서 이름을 적고 저장 버튼을 눌러보세요!</p>
+            </div>
+          `;
+          return;
+        }
+
+        storageListEl.innerHTML = slots.map(slot => {
+          const isCurrent = slot.id === state.currentSlotId;
+          return `
+            <div class="p-2.5 rounded-2xl border ${isCurrent ? 'border-sky-400 bg-sky-50/50' : 'border-slate-300/70 bg-white/85'} flex items-center justify-between gap-2 ui-sans">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-xs font-bold text-slate-800 truncate">${escapeHtml(slot.name || '이름 없음')}</span>
+                  ${isCurrent ? '<span class="shrink-0 px-1.5 py-0.5 rounded-full bg-sky-500 text-white text-[9px] font-bold">현재</span>' : ''}
+                </div>
+                <div class="text-[10px] text-slate-500 mt-0.5">
+                  카드 ${slot.nodeCount ?? 0}개 · 선 ${slot.edgeCount ?? 0}개 · ${formatSavedTime(slot.updatedAt)}
+                </div>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button type="button" data-slot-load="${slot.id}" class="sketch-btn px-2.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold">불러오기</button>
+                <button type="button" data-slot-overwrite="${slot.id}" class="sketch-btn px-2 py-1.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 text-[11px] font-bold" title="현재 내용으로 덮어쓰기">덮어쓰기</button>
+                <button type="button" data-slot-delete="${slot.id}" class="sketch-btn w-7 h-7 rounded-xl hover:bg-rose-100 text-slate-400 hover:text-rose-600 text-xs font-bold flex items-center justify-center" title="삭제">✕</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+
+        storageListEl.querySelectorAll('[data-slot-load]').forEach(btn => {
+          btn.addEventListener('click', () => loadSlotFromBrowser(btn.dataset.slotLoad));
+        });
+        storageListEl.querySelectorAll('[data-slot-overwrite]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            saveCurrentToBrowser({ overwriteSlotId: btn.dataset.slotOverwrite });
+          });
+        });
+        storageListEl.querySelectorAll('[data-slot-delete]').forEach(btn => {
+          btn.addEventListener('click', () => deleteSlotFromBrowser(btn.dataset.slotDelete));
+        });
+      }
+
+      function pushUndo() {
+        const snap = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+        if (undoStack.length && undoStack[undoStack.length - 1] === snap) return;
+        undoStack.push(snap);
+        if (undoStack.length > MAX_UNDO) undoStack.shift();
+        // 새로운 작업이 발생하면 다시 실행(Redo) 기록 초기화
+        redoStack.length = 0;
+        updateUndoButton();
+      }
+
+      function updateUndoButton() {
+        const undoBtn = document.getElementById('btn-undo');
+        if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+        const redoBtn = document.getElementById('btn-redo');
+        if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+      }
+
+      function performUndo() {
+        if (!undoStack.length) return;
+        try {
+          const currentSnap = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+          redoStack.push(currentSnap);
+          if (redoStack.length > MAX_UNDO) redoStack.shift();
+
+          const prev = JSON.parse(undoStack.pop());
+          state.nodes = prev.nodes || [];
+          state.edges = prev.edges || [];
+          state.selectedNodeId = null;
+          state.editingNodeId = null;
+          state.selectedEdgeId = null;
+          renderAll();
+          updateUndoButton();
+          scheduleSave();
+          SoundEngine.play('boing');
+          showToast('이전 상태로 되돌렸어요', '↩️');
+        } catch (e) {
+          showToast('되돌리기에 실패했어요', '⚠️');
+        }
+      }
+
+      function performRedo() {
+        if (!redoStack.length) return;
+        try {
+          const currentSnap = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+          undoStack.push(currentSnap);
+          if (undoStack.length > MAX_UNDO) undoStack.shift();
+
+          const next = JSON.parse(redoStack.pop());
+          state.nodes = next.nodes || [];
+          state.edges = next.edges || [];
+          state.selectedNodeId = null;
+          state.editingNodeId = null;
+          state.selectedEdgeId = null;
+          renderAll();
+          updateUndoButton();
+          scheduleSave();
+          SoundEngine.play('spawn');
+          showToast('되돌린 내용을 다시 실행했어요', '↪️');
+        } catch (e) {
+          showToast('다시 실행에 실패했어요', '⚠️');
+        }
+      }
+
+      /* -----------------------------------------------------------------------
+         7. 뽀잉뽀잉 젤리 스프링 물리 엔진
+         ----------------------------------------------------------------------- */
+      function getPhys(id) {
+        if (!nodePhysics.has(id)) {
+          nodePhysics.set(id, {
+            sx: 1, sy: 1, rot: 0,
+            vsx: 0, vsy: 0, vrot: 0,
+            targetSx: 1, targetSy: 1, targetRot: 0
+          });
+        }
+        return nodePhysics.get(id);
+      }
+
+      function triggerNodeBoing(id, intensity = 1) {
+        const p = getPhys(id);
+        p.vsx += 0.23 * intensity;
+        p.vsy -= 0.19 * intensity;
+        p.vrot += (Math.random() > 0.5 ? 1 : -1) * 2.8 * intensity;
+        ensurePhysicsLoop();
+      }
+
+      function ensurePhysicsLoop() {
+        if (!physicsRafId) {
+          physicsRafId = requestAnimationFrame(stepPhysics);
+        }
+      }
+
+      function stepPhysics() {
+        let active = false;
+        const stiffness = 0.23;
+        const damping = 0.72;
+
+        for (const [id, p] of nodePhysics.entries()) {
+          const el = nodeElements.get(id);
+          const node = state.nodes.find(n => n.id === id);
+          if (!el || !node) continue;
+
+          p.vsx = (p.vsx + (p.targetSx - p.sx) * stiffness) * damping;
+          p.vsy = (p.vsy + (p.targetSy - p.sy) * stiffness) * damping;
+          p.vrot = (p.vrot + (p.targetRot - p.rot) * stiffness) * damping;
+
+          p.sx += p.vsx;
+          p.sy += p.vsy;
+          p.rot += p.vrot;
+
+          const settled =
+            Math.abs(p.targetSx - p.sx) < 0.0015 &&
+            Math.abs(p.targetSy - p.sy) < 0.0015 &&
+            Math.abs(p.targetRot - p.rot) < 0.05 &&
+            Math.abs(p.vsx) < 0.0015 &&
+            Math.abs(p.vsy) < 0.0015 &&
+            Math.abs(p.vrot) < 0.05;
+
+          if (settled) {
+            p.sx = p.targetSx;
+            p.sy = p.targetSy;
+            p.rot = p.targetRot;
+            p.vsx = p.vsy = p.vrot = 0;
+          } else {
+            active = true;
+          }
+
+          el.style.transform = `translate3d(${node.x}px, ${node.y}px, 0) scale(${p.sx.toFixed(4)}, ${p.sy.toFixed(4)}) rotate(${p.rot.toFixed(2)}deg)`;
+        }
+
+        if (active) {
+          physicsRafId = requestAnimationFrame(stepPhysics);
+        } else {
+          physicsRafId = null;
+        }
+      }
+
+      /* -----------------------------------------------------------------------
+         8. 뷰포트 변환 & 연한 모눈종이 격자 동기화
+         ----------------------------------------------------------------------- */
+      function updateViewportTransform() {
+        worldEl.style.transform = `translate3d(${state.panX}px, ${state.panY}px, 0) scale(${state.zoom})`;
+
+        const major = 120 * state.zoom;
+        const minor = 24 * state.zoom;
+        viewportEl.style.backgroundSize = `${major}px ${major}px, ${major}px ${major}px, ${minor}px ${minor}px, ${minor}px ${minor}px`;
+        viewportEl.style.backgroundPosition = `${state.panX}px ${state.panY}px`;
+
+        updateSelectedEdgeButton();
+      }
+
+      function zoomAt(clientX, clientY, newZoom) {
+        const clamped = clamp(newZoom, 0.28, 2.4);
+        const worldPos = screenToWorld(clientX, clientY);
+        state.zoom = clamped;
+        state.panX = clientX - worldPos.x * state.zoom;
+        state.panY = clientY - worldPos.y * state.zoom;
+        updateViewportTransform();
+        scheduleSave();
+      }
+
+      function fitView(animate = true) {
+        if (!state.nodes.length) {
+          state.panX = window.innerWidth / 2;
+          state.panY = window.innerHeight / 2;
+          state.zoom = 1;
+          updateViewportTransform();
+          return;
+        }
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        state.nodes.forEach(n => {
+          const el = nodeElements.get(n.id);
+          const w = el ? el.offsetWidth : (n.width || 240);
+          const h = el ? el.offsetHeight : 120;
+          minX = Math.min(minX, n.x);
+          minY = Math.min(minY, n.y);
+          maxX = Math.max(maxX, n.x + w);
+          maxY = Math.max(maxY, n.y + h);
+        });
+
+        const padding = window.innerWidth < 640 ? 44 : 88;
+        const contentW = Math.max(100, maxX - minX);
+        const contentH = Math.max(100, maxY - minY);
+        const availW = Math.max(200, window.innerWidth - padding * 2);
+        const availH = Math.max(200, window.innerHeight - padding * 2);
+
+        const targetZoom = clamp(Math.min(availW / contentW, availH / contentH), 0.42, 1.15);
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const targetPanX = window.innerWidth / 2 - cx * targetZoom;
+        const targetPanY = window.innerHeight / 2 - cy * targetZoom;
+
+        if (!animate) {
+          state.zoom = targetZoom;
+          state.panX = targetPanX;
+          state.panY = targetPanY;
+          updateViewportTransform();
+          return;
+        }
+
+        const startX = state.panX, startY = state.panY, startZ = state.zoom;
+        const startTime = performance.now();
+        const duration = 360;
+
+        function anim(now) {
+          const t = Math.min(1, (now - startTime) / duration);
+          const ease = 1 - Math.pow(1 - t, 3);
+          state.panX = startX + (targetPanX - startX) * ease;
+          state.panY = startY + (targetPanY - startY) * ease;
+          state.zoom = startZ + (targetZoom - startZ) * ease;
+          updateViewportTransform();
+          if (t < 1) requestAnimationFrame(anim);
+          else scheduleSave();
+        }
+        requestAnimationFrame(anim);
+      }
+
+      /* -----------------------------------------------------------------------
+         9. 노드 생성 & 스마트 타입 전환 (메모 ↔ 말풍선 ↔ 표 ↔ 그래프)
+         ----------------------------------------------------------------------- */
+      function createNodeData(type, x, y, overrides = {}) {
+        const base = {
+          id: genId('n'),
+          seed: genSeed(),
+          type,
+          x: Math.round(x),
+          y: Math.round(y),
+          width: type === 'mindmap' ? 195 : type === 'table' ? 295 : type === 'chart' ? 305 : 235,
+          color: type === 'memo' ? 'lemon' : type === 'mindmap' ? 'sky' : type === 'table' ? 'mint' : 'lavender',
+          title: '',
+          content: '',
+          ...overrides
+        };
+
+        if (type === 'table' && !base.tableData) {
+          base.tableData = {
+            headers: ['항목', '수치', '메모'],
+            rows: [
+              ['월', '32', '좋음'],
+              ['화', '48', '상승'],
+              ['수', '41', '유지']
+            ]
+          };
+        }
+        if (type === 'chart' && !base.chartData) {
+          base.chartData = {
+            chartType: 'bar',
+            editing: false,
+            items: [
+              { label: '기획', value: 35 },
+              { label: '스케치', value: 58 },
+              { label: '완성', value: 76 }
+            ]
+          };
+        }
+        return base;
+      }
+
+      function addNode(type, worldX, worldY, overrides = {}, parentId = null, autoEdit = false) {
+        pushUndo();
+        const node = createNodeData(type, worldX, worldY, overrides);
+        state.nodes.push(node);
+
+        if (parentId) {
+          state.edges.push({ id: genId('e'), from: parentId, to: node.id, seed: genSeed() });
+        }
+
+        const el = renderNode(node, true);
+        renderEdges();
+        selectNode(node.id, autoEdit);
+        SoundEngine.play('spawn');
+        scheduleSave();
+
+        if (autoEdit) {
+          const focusTarget = el.querySelector('.memo-textarea') || el.querySelector('.node-title-input');
+          if (focusTarget) {
+            // 클릭/탭 제스처 흐름 안에서 즉시 포커스하여 모바일 키보드도 자연스럽게 열림
+            focusTarget.focus();
+          }
+        }
+        return node;
+      }
+
+      // 노드 설정에서 타입을 바꿀 때 기존 내용을 알잘딱하게 자동 변환!
+      function switchNodeType(node, newType) {
+        if (node.type === newType) return;
+        pushUndo();
+
+        const oldType = node.type;
+        const oldW = node.width || 235;
+
+        // 1) 메모/말풍선 -> 표
+        if (newType === 'table') {
+          if (oldType === 'chart' && node.chartData?.items?.length) {
+            node.tableData = {
+              headers: ['항목', '수치'],
+              rows: node.chartData.items.map(it => [String(it.label ?? ''), String(it.value ?? 0)])
+            };
+          } else if ((oldType === 'memo' || oldType === 'mindmap') && node.content?.trim()) {
+            const lines = node.content.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const parsed = lines.map(line => {
+              if (line.includes('\t')) return line.split('\t').map(s => s.trim());
+              if (line.includes(',')) return line.split(',').map(s => s.trim());
+              if (line.includes(':')) return line.split(':').map(s => s.trim());
+              const m = line.match(/^(.+?)\s+(-?\d+(?:\.\d+)?)$/);
+              if (m) return [m[1].trim(), m[2]];
+              return [line, ''];
+            });
+            const colCount = Math.max(2, ...parsed.map(r => r.length));
+            node.tableData = {
+              headers: Array.from({ length: colCount }, (_, i) => i === 0 ? '항목' : i === 1 ? '값' : `메모${i - 1}`),
+              rows: parsed.map(r => Array.from({ length: colCount }, (_, i) => r[i] ?? ''))
+            };
+          } else if (!node.tableData) {
+            node.tableData = {
+              headers: ['항목', '수치', '메모'],
+              rows: [['항목 1', '30', ''], ['항목 2', '55', ''], ['항목 3', '42', '']]
+            };
+          }
+          if (!node.title) node.title = '손그림 표';
+          node.width = Math.max(285, oldW);
+        }
+
+        // 2) 메모/말풍선/표 -> 그래프
+        else if (newType === 'chart') {
+          let extracted = [];
+          if (oldType === 'table' && node.tableData?.rows?.length) {
+            extracted = extractChartItemsFromTable(node.tableData);
+          } else if ((oldType === 'memo' || oldType === 'mindmap') && node.content?.trim()) {
+            const lines = node.content.trim().split(/\r?\n/);
+            lines.forEach((line, idx) => {
+              const m = line.match(/^([^0-9,:\t-]+)?[,:\s\t-]*(-?\d+(?:\.\d+)?)/);
+              if (m) {
+                const label = (m[1] || `항목 ${idx + 1}`).replace(/^[•\-\*]\s*/, '').trim() || `항목 ${idx + 1}`;
+                extracted.push({ label, value: parseFloat(m[2]) || 0 });
+              }
+            });
+          }
+
+          if (extracted.length > 0) {
+            node.chartData = {
+              chartType: node.chartData?.chartType || 'bar',
+              editing: false,
+              items: extracted
+            };
+          } else if (!node.chartData) {
+            node.chartData = {
+              chartType: 'bar',
+              editing: false,
+              items: [
+                { label: '항목 A', value: 35 },
+                { label: '항목 B', value: 62 },
+                { label: '항목 C', value: 48 }
+              ]
+            };
+          }
+          if (!node.title) node.title = '손그림 그래프';
+          node.width = Math.max(295, oldW);
+        }
+
+        // 3) 표/그래프 -> 메모
+        else if (newType === 'memo') {
+          if (!node.content?.trim()) {
+            if (oldType === 'table' && node.tableData?.rows?.length) {
+              node.content = node.tableData.rows.map(r => r.filter(Boolean).join(' : ')).join('\n');
+            } else if (oldType === 'chart' && node.chartData?.items?.length) {
+              node.content = node.chartData.items.map(it => `${it.label} ${it.value}`).join('\n');
+            }
+          }
+          node.width = clamp(oldW, 215, 320);
+        }
+
+        // 4) 어떤 노드든 -> 말풍선(마인드맵 키워드)
+        else if (newType === 'mindmap') {
+          if (!node.title && node.content?.trim()) {
+            node.title = node.content.trim().split(/\r?\n/)[0].slice(0, 24);
+          }
+          node.width = clamp(oldW, 180, 240);
+        }
+
+        // 중심 위치가 어긋나지 않게 미세 보정
+        node.x = Math.round(node.x - (node.width - oldW) / 2);
+        node.height = null;
+        node.type = newType;
+        state.editingNodeId = null;
+
+        rerenderSingleNode(node);
+        triggerNodeBoing(node.id, 1.05);
+        SoundEngine.play('boing');
+        scheduleSave();
+
+        const typeLabel = { memo: '메모', mindmap: '말풍선', table: '표', chart: '그래프' }[newType];
+        showToast(`${typeLabel} 모양으로 뽀잉! 바꿨어요`, '✨');
+      }
+
+      function extractChartItemsFromTable(td) {
+        let valueCol = 1;
+        let bestCount = -1;
+        for (let c = 1; c < td.headers.length; c++) {
+          let cnt = 0;
+          td.rows.forEach(r => {
+            const num = parseFloat(String(r[c] || '').replace(/[^0-9.-]/g, ''));
+            if (!isNaN(num)) cnt++;
+          });
+          if (cnt > bestCount) {
+            bestCount = cnt;
+            valueCol = c;
+          }
+        }
+        return td.rows.map((r, i) => {
+          const label = String(r[0] || `항목 ${i + 1}`).trim();
+          const num = parseFloat(String(r[valueCol] || '0').replace(/[^0-9.-]/g, ''));
+          return { label, value: isNaN(num) ? 0 : num };
+        });
+      }
+
+      function findSmartChildPosition(parentNode, preferredSide = 'right') {
+        const pEl = nodeElements.get(parentNode.id);
+        const pw = pEl ? pEl.offsetWidth : (parentNode.width || 220);
+        const ph = pEl ? pEl.offsetHeight : 90;
+
+        const existingChildren = state.edges
+          .filter(e => e.from === parentNode.id)
+          .map(e => state.nodes.find(n => n.id === e.to))
+          .filter(Boolean);
+
+        const idx = existingChildren.length;
+        if (preferredSide === 'bottom') {
+          return {
+            x: parentNode.x + (idx % 2 === 0 ? 1 : -1) * Math.ceil(idx / 2) * 165,
+            y: parentNode.y + ph + 86
+          };
+        }
+        const spreadY = idx === 0 ? 0 : (idx % 2 === 1 ? -1 : 1) * Math.ceil(idx / 2) * 120;
+        return {
+          x: parentNode.x + pw + 94,
+          y: parentNode.y + spreadY
+        };
+      }
+
+      /* -----------------------------------------------------------------------
+         10. 손그림 SVG 테두리 실시간 업데이트
+         ----------------------------------------------------------------------- */
+      function updateNodeSketch(node, wrapper) {
+        const card = wrapper.querySelector('.node-card');
+        const svg = wrapper.querySelector('.sketch-bg-svg');
+        if (!card || !svg) return;
+
+        const w = Math.max(60, card.offsetWidth);
+        const h = Math.max(44, card.offsetHeight);
+        const theme = COLOR_THEMES[node.color] || COLOR_THEMES.paper;
+        const seed = node.seed || 12345;
+
+        const paths = node.type === 'mindmap'
+          ? Sketch.bubblePaths(w, h, seed)
+          : Sketch.rectPaths(w, h, seed, 1.75);
+
+        svg.setAttribute('viewBox', `0 0 ${w + 12} ${h + 12}`);
+        svg.innerHTML = `
+          <!-- 종이 위 부드러운 손그림 그림자 -->
+          <path d="${paths.fillPath}" transform="translate(3.5, 4.2)" fill="rgba(44, 52, 64, 0.085)" />
+          <!-- 따뜻한 마커/종이 채우기 -->
+          <path d="${paths.fillPath}" fill="${theme.fill}" />
+          <!-- 1차 펜 외곽선 -->
+          <path d="${paths.stroke1}" fill="none" stroke="${theme.stroke}" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" />
+          <!-- 2차 덧그린 펜선 (진짜 손그림 감성!) -->
+          <path d="${paths.stroke2}" fill="none" stroke="${theme.stroke}" stroke-width="1.15" stroke-opacity="0.58" stroke-linecap="round" stroke-linejoin="round" />
+        `;
+      }
+
+      /* -----------------------------------------------------------------------
+         11. 노드 렌더링 (메모 / 말풍선 / 표 / 그래프)
+         ----------------------------------------------------------------------- */
+      function renderAll() {
+        nodesLayerEl.innerHTML = '';
+        nodeElements.clear();
+        nodePhysics.clear();
+
+        state.nodes.forEach(node => renderNode(node, false));
+        renderEdges();
+        updateSelectionUI();
+      }
+
+      // 노드의 가로·세로 크기와 내부 입력칸 높이를 동기화
+      function applyNodeSize(node, wrapper) {
+        if (!wrapper) return;
+        wrapper.style.width = `${node.width || 235}px`;
+        const card = wrapper.querySelector('.node-card');
+        if (!card) return;
+
+        const hasCustomHeight = typeof node.height === 'number' && node.height > 0;
+        card.classList.toggle('has-custom-height', hasCustomHeight);
+
+        if (hasCustomHeight) {
+          if (node.type === 'chart' && node.chartData?.editing) {
+            card.style.height = 'auto';
+            card.style.minHeight = `${node.height}px`;
+          } else {
+            card.style.height = `${node.height}px`;
+            card.style.minHeight = '';
+          }
+        } else {
+          card.style.height = '';
+          card.style.minHeight = '';
+        }
+
+        if (node.type === 'memo') {
+          const ta = wrapper.querySelector('.memo-textarea');
+          if (ta) {
+            if (hasCustomHeight) {
+              ta.style.height = '';
+            } else {
+              ta.style.height = 'auto';
+              ta.style.height = Math.min(280, Math.max(54, ta.scrollHeight)) + 'px';
+            }
+          }
+        }
+      }
+
+      function renderNode(node, isNew = false) {
+        if (!node.seed) node.seed = genSeed();
+        const theme = COLOR_THEMES[node.color] || COLOR_THEMES.paper;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'node-wrapper group';
+        wrapper.dataset.id = node.id;
+        wrapper.style.width = `${node.width || 235}px`;
+        wrapper.style.transform = `translate3d(${node.x}px, ${node.y}px, 0)`;
+
+        const typeButtons = [
+          { key: 'memo',    label: '메모',  icon: '✏️' },
+          { key: 'mindmap', label: '말풍선', icon: '🫧' },
+          { key: 'table',   label: '표',    icon: '📋' },
+          { key: 'chart',   label: '그래프', icon: '📊' }
+        ];
+
+        wrapper.innerHTML = `
+          <!-- 선택 시 떠오르는 노드 설정 바 (여기서 메모/말풍선/표/그래프 자유 전환!) -->
+          <div class="node-toolbar hidden animate-toolbar-pop absolute -top-[82px] left-1/2 z-30 flex flex-col items-center gap-1 px-2.5 py-1.5 bg-[#fffef9]/95 backdrop-blur-md sketch-pill whitespace-nowrap" style="background-color: rgba(255, 254, 249, 0.96);">
+            <!-- 1줄: 노드 타입 전환 -->
+            <div class="flex items-center gap-0.5 ui-sans">
+              ${typeButtons.map(tb => `
+                <button type="button" data-switch-type="${tb.key}" class="sketch-btn px-2 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-0.5 ${node.type === tb.key ? 'bg-[#2c3440] text-white' : 'text-slate-600 hover:bg-amber-100/70'}">
+                  <span>${tb.icon}</span><span>${tb.label}</span>
+                </button>
+              `).join('')}
+            </div>
+            <!-- 2줄: 마커 색상 & 가지/복제/삭제 -->
+            <div class="flex items-center gap-1.5 pt-0.5 border-t border-slate-200/80 w-full justify-center">
+              <div class="flex items-center gap-1 pr-1.5 border-r border-slate-200/90">
+                ${Object.entries(COLOR_THEMES).map(([key, t]) => `
+                  <button type="button" data-color="${key}" class="sketch-btn w-4 h-4 rounded-full border-[1.5px] border-slate-500/50 ${node.color === key ? 'ring-2 ring-sky-400 scale-110' : ''}" style="background:${t.dot}" title="형광펜 색상"></button>
+                `).join('')}
+              </div>
+              <button type="button" data-action="branch" class="sketch-btn ui-sans px-1.5 py-0.5 rounded-full text-[11px] font-bold text-sky-700 hover:bg-sky-50" title="연결된 새 메모 추가">+가지</button>
+              <button type="button" data-action="duplicate" class="sketch-btn p-1 rounded-full text-slate-500 hover:bg-slate-100" title="복제">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              </button>
+              <button type="button" data-action="delete" class="sketch-btn p-1 rounded-full text-rose-500 hover:bg-rose-50" title="삭제">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 손그림 카드 본체 -->
+          <div class="node-card ${isNew ? 'animate-boing-spawn' : ''}">
+            <svg class="sketch-bg-svg"></svg>
+            <div class="node-body"></div>
+
+            <!-- 우측 하단 가로·세로 크기 조절 핸들 (더블클릭 시 세로 자동 맞춤) -->
+            <div class="resize-handle absolute bottom-1 right-1 w-6 h-6 cursor-nwse-resize opacity-0 group-hover:opacity-75 hover:!opacity-100 flex items-end justify-end p-1 text-slate-500 z-10" title="드래그: 가로·세로 크기 조절 / 더블클릭: 자동 높이">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12L12 3M7.5 12L12 7.5"/></svg>
+            </div>
+          </div>
+
+          <!-- 우측 & 하단 뽀잉 연결/가지치기 (+) 핸들 -->
+          <button type="button" data-handle="right" class="branch-handle absolute top-1/2 -right-4 -translate-y-1/2 w-7 h-7 bg-[#fffef9] border-[2px] shadow-sm flex items-center justify-center text-base font-bold opacity-0 group-hover:opacity-100 z-20" style="border-color:${theme.stroke}; color:${theme.stroke}" title="클릭: 가지 추가 / 드래그: 연결">
+            +
+          </button>
+          <button type="button" data-handle="bottom" class="branch-handle absolute -bottom-4 left-1/2 -translate-x-1/2 w-7 h-7 bg-[#fffef9] border-[2px] shadow-sm flex items-center justify-center text-base font-bold opacity-0 group-hover:opacity-100 z-20" style="border-color:${theme.stroke}; color:${theme.stroke}" title="클릭: 아래 가지 추가 / 드래그: 연결">
+            +
+          </button>
+        `;
+
+        const bodyEl = wrapper.querySelector('.node-body');
+        populateNodeBody(node, bodyEl, theme);
+        bindNodeEvents(node, wrapper);
+
+        nodesLayerEl.appendChild(wrapper);
+        nodeElements.set(node.id, wrapper);
+
+        // 저장된 가로·세로 크기 반영 후 손그림 외곽선 그리기
+        applyNodeSize(node, wrapper);
+        updateNodeSketch(node, wrapper);
+        if (nodeResizeObserver) {
+          nodeResizeObserver.observe(wrapper.querySelector('.node-card'));
+        }
+        return wrapper;
+      }
+
+      function populateNodeBody(node, bodyEl, theme) {
+        if (node.type === 'mindmap') {
+          bodyEl.innerHTML = `
+            <div class="px-5 py-3.5 text-center flex-1 flex items-center justify-center min-h-0">
+              <input type="text" class="node-title-input edit-field w-full bg-transparent text-center text-xl font-bold focus:outline-none placeholder:text-slate-400/80" style="color:${theme.text}" value="${escapeHtml(node.title)}" placeholder="핵심 키워드..." />
+            </div>
+          `;
+          const inp = bodyEl.querySelector('.node-title-input');
+          inp.addEventListener('input', () => {
+            node.title = inp.value;
+            scheduleSave();
+          });
+          inp.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab') {
+              e.preventDefault();
+              const pos = findSmartChildPosition(node, 'right');
+              addNode('mindmap', pos.x, pos.y, { color: node.color }, node.id, true);
+            }
+          });
+        }
+
+        else if (node.type === 'memo') {
+          bodyEl.innerHTML = `
+            <div class="px-4 py-3 flex flex-col flex-1 min-h-0">
+              <input type="text" class="node-title-input edit-field shrink-0 w-full bg-transparent text-lg font-bold focus:outline-none placeholder:text-slate-400/70 mb-0.5" style="color:${theme.text}" value="${escapeHtml(node.title)}" placeholder="제목 (선택)" />
+              <div class="shrink-0 w-full h-[1.5px] mb-1.5 opacity-25" style="background: repeating-linear-gradient(to right, ${theme.stroke} 0 5px, transparent 5px 9px);"></div>
+              <textarea rows="2" class="memo-textarea edit-field thin-scroll w-full flex-1 min-h-[36px] bg-transparent text-[17px] leading-[1.38] focus:outline-none resize-none placeholder:text-slate-400/80" style="color:${theme.text}" placeholder="여기에 쓱쓱 메모하세요...">${escapeHtml(node.content)}</textarea>
+            </div>
+          `;
+          const titleInp = bodyEl.querySelector('.node-title-input');
+          const ta = bodyEl.querySelector('.memo-textarea');
+
+          const autoResize = () => {
+            if (typeof node.height === 'number' && node.height > 0) {
+              ta.style.height = '';
+              return;
+            }
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(280, Math.max(54, ta.scrollHeight)) + 'px';
+            const wrapper = nodeElements.get(node.id);
+            if (wrapper) updateNodeSketch(node, wrapper);
+            renderEdges();
+          };
+          setTimeout(autoResize, 0);
+
+          titleInp.addEventListener('input', () => { node.title = titleInp.value; scheduleSave(); });
+          ta.addEventListener('input', () => { node.content = ta.value; autoResize(); scheduleSave(); });
+        }
+
+        else if (node.type === 'table') {
+          renderTableBody(node, bodyEl, theme);
+        }
+
+        else if (node.type === 'chart') {
+          renderChartBody(node, bodyEl, theme);
+        }
+      }
+
+      /* -----------------------------------------------------------------------
+         12. 손그림 표(Table) 컴포넌트
+         ----------------------------------------------------------------------- */
+      function renderTableBody(node, bodyEl, theme) {
+        const td = node.tableData || { headers: ['항목', '수치'], rows: [['항목 1', '10']] };
+        node.tableData = td;
+
+        bodyEl.innerHTML = `
+          <div class="p-3.5 flex flex-col flex-1 min-h-0">
+            <div class="flex items-center justify-between gap-2 mb-2 shrink-0">
+              <input type="text" class="node-title-input edit-field w-full bg-transparent text-lg font-bold focus:outline-none truncate" style="color:${theme.text}" value="${escapeHtml(node.title)}" placeholder="표 제목" />
+              <button type="button" class="btn-spawn-chart sketch-btn ui-sans shrink-0 px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#fffef9] border-[1.5px] border-slate-600/60 text-violet-700 hover:bg-violet-50" title="옆에 그래프 노드 추가">
+                📊 그래프 뽑기
+              </button>
+            </div>
+
+            <div class="flex-1 min-h-0 overflow-auto thin-scroll rounded-xl border-[1.6px] border-slate-700/55 bg-[#fffef9]/75">
+              <table class="sketch-table w-full text-[15px] border-collapse">
+                <thead>
+                  <tr class="border-b-[1.6px] border-slate-700/55" style="background:${theme.soft}">
+                    ${td.headers.map((h, ci) => `
+                      <th class="p-0 border-r last:border-r-0">
+                        <input type="text" data-hcol="${ci}" class="edit-field w-full min-w-[54px] px-2 py-1 bg-transparent font-bold text-center focus:outline-none focus:bg-white/70" style="color:${theme.text}" value="${escapeHtml(h)}" />
+                      </th>
+                    `).join('')}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${td.rows.map((row, ri) => `
+                    <tr class="border-b border-dashed last:border-b-0">
+                      ${td.headers.map((_, ci) => `
+                        <td class="p-0 border-r border-dashed last:border-r-0">
+                          <input type="text" data-row="${ri}" data-col="${ci}" class="edit-field w-full min-w-[54px] px-2 py-1 bg-transparent text-center focus:outline-none focus:bg-white/70" style="color:${theme.text}" value="${escapeHtml(row[ci] ?? '')}" />
+                        </td>
+                      `).join('')}
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex items-center justify-between mt-2 ui-sans text-[11px] text-slate-600 shrink-0">
+              <div class="flex items-center gap-1">
+                <button type="button" class="btn-add-row sketch-btn px-2 py-0.5 rounded-full bg-[#fffef9] border border-slate-400/70 font-semibold">+행</button>
+                <button type="button" class="btn-add-col sketch-btn px-2 py-0.5 rounded-full bg-[#fffef9] border border-slate-400/70 font-semibold">+열</button>
+              </div>
+              <div class="flex items-center gap-1">
+                <button type="button" class="btn-del-row sketch-btn px-2 py-0.5 rounded-full hover:bg-rose-50 hover:text-rose-600 font-semibold">-행</button>
+                <button type="button" class="btn-del-col sketch-btn px-2 py-0.5 rounded-full hover:bg-rose-50 hover:text-rose-600 font-semibold">-열</button>
+              </div>
+            </div>
+          </div>
+        `;
+
+        bodyEl.querySelector('.node-title-input').addEventListener('input', (e) => {
+          node.title = e.target.value;
+          scheduleSave();
+        });
+
+        bodyEl.querySelectorAll('input[data-hcol]').forEach(inp => {
+          inp.addEventListener('input', () => {
+            td.headers[Number(inp.dataset.hcol)] = inp.value;
+            scheduleSave();
+          });
+        });
+
+        bodyEl.querySelectorAll('input[data-row]').forEach(inp => {
+          inp.addEventListener('input', () => {
+            td.rows[Number(inp.dataset.row)][Number(inp.dataset.col)] = inp.value;
+            scheduleSave();
+          });
+
+          // 엑셀/시트 붙여넣기 자동 확장
+          inp.addEventListener('paste', (e) => {
+            const text = (e.clipboardData || window.clipboardData).getData('text');
+            if (!text || (!text.includes('\t') && !text.includes('\n'))) return;
+            e.preventDefault();
+            pushUndo();
+            const startR = Number(inp.dataset.row);
+            const startC = Number(inp.dataset.col);
+            const lines = text.trim().split(/\r?\n/).map(l => l.split('\t'));
+            lines.forEach((cols, dr) => {
+              const rIdx = startR + dr;
+              while (td.rows.length <= rIdx) td.rows.push(new Array(td.headers.length).fill(''));
+              cols.forEach((val, dc) => {
+                const cIdx = startC + dc;
+                while (td.headers.length <= cIdx) {
+                  td.headers.push(`열 ${td.headers.length + 1}`);
+                  td.rows.forEach(r => r.push(''));
+                }
+                td.rows[rIdx][cIdx] = val.trim();
+              });
+            });
+            renderTableBody(node, bodyEl, theme);
+            const wrapper = nodeElements.get(node.id);
+            if (wrapper) updateNodeSketch(node, wrapper);
+            triggerNodeBoing(node.id, 0.75);
+            SoundEngine.play('boing');
+            scheduleSave();
+            showToast('표 내용을 깔끔하게 붙여넣었어요!', '📋');
+          });
+        });
+
+        const refreshTable = () => {
+          renderTableBody(node, bodyEl, theme);
+          const wrapper = nodeElements.get(node.id);
+          if (wrapper) updateNodeSketch(node, wrapper);
+          renderEdges();
+          scheduleSave();
+        };
+
+        bodyEl.querySelector('.btn-add-row').addEventListener('click', (e) => {
+          e.stopPropagation();
+          pushUndo();
+          td.rows.push(td.headers.map((_, i) => i === 0 ? `항목 ${td.rows.length + 1}` : '0'));
+          refreshTable();
+          triggerNodeBoing(node.id, 0.65);
+          SoundEngine.play('click');
+        });
+
+        bodyEl.querySelector('.btn-add-col').addEventListener('click', (e) => {
+          e.stopPropagation();
+          pushUndo();
+          td.headers.push(`열 ${td.headers.length + 1}`);
+          td.rows.forEach(r => r.push(''));
+          refreshTable();
+          triggerNodeBoing(node.id, 0.65);
+          SoundEngine.play('click');
+        });
+
+        bodyEl.querySelector('.btn-del-row').addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (td.rows.length <= 1) return showToast('최소 1개 행은 필요해요', '📋');
+          pushUndo();
+          td.rows.pop();
+          refreshTable();
+          SoundEngine.play('delete');
+        });
+
+        bodyEl.querySelector('.btn-del-col').addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (td.headers.length <= 1) return showToast('최소 1개 열은 필요해요', '📋');
+          pushUndo();
+          td.headers.pop();
+          td.rows.forEach(r => r.pop());
+          refreshTable();
+          SoundEngine.play('delete');
+        });
+
+        // 표에서 별도 그래프 카드 바로 생성
+        bodyEl.querySelector('.btn-spawn-chart').addEventListener('click', (e) => {
+          e.stopPropagation();
+          const items = extractChartItemsFromTable(td);
+          const pos = findSmartChildPosition(node, 'right');
+          addNode('chart', pos.x, pos.y, {
+            title: `${node.title || '표'} 그래프`,
+            color: 'lavender',
+            chartData: { chartType: 'bar', editing: false, items }
+          }, node.id, false);
+          showToast('표로 손그림 그래프를 뚝딱 그렸어요!', '📊');
+        });
+      }
+
+      /* -----------------------------------------------------------------------
+         13. 손그림 그래프(Chart) SVG 렌더링 (막대 · 꺾은선 · 원형 + 펜 빗금 질감)
+         ----------------------------------------------------------------------- */
+      function buildSketchChartSvg(node) {
+        const cd = node.chartData;
+        const items = (cd.items || []).filter(Boolean);
+        if (!items.length) {
+          return `<div class="h-36 flex items-center justify-center text-sm text-slate-400">항목을 추가해 주세요</div>`;
+        }
+
+        const W = 276;
+        const H = 158;
+        const rng = mulberry32((node.seed || 100) + 911);
+        const patId = `hatch_${node.id}`;
+
+        // 공통 펜 빗금 패턴 (마커로 쓱쓱 칠한 질감)
+        const hatchDef = `
+          <defs>
+            <pattern id="${patId}" width="6" height="6" patternTransform="rotate(38 0 0)" patternUnits="userSpaceOnUse">
+              <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(44,52,64,0.18)" stroke-width="1.4" />
+            </pattern>
+          </defs>
+        `;
+
+        // 1) 손그림 막대 그래프
+        if (cd.chartType === 'bar') {
+          const maxVal = Math.max(1, ...items.map(i => Math.max(0, Number(i.value) || 0)));
+          const padL = 18, padR = 14, padT = 24, padB = 28;
+          const chartW = W - padL - padR;
+          const chartH = H - padT - padB;
+          const slotW = chartW / items.length;
+          const barW = Math.min(34, Math.max(14, slotW * 0.56));
+
+          // 손그림 X축 & Y축
+          const yAxis = Sketch.line(padL, padT - 6, padL, H - padB + 2, rng, 1.1);
+          const xAxis = Sketch.line(padL - 3, H - padB, W - padR + 4, H - padB, rng, 1.2);
+
+          const bars = items.map((item, i) => {
+            const val = Math.max(0, Number(item.value) || 0);
+            const bh = Math.max(4, (val / maxVal) * chartH);
+            const cx = padL + slotW * i + slotW / 2;
+            const x = cx - barW / 2;
+            const y = padT + chartH - bh;
+            const color = CHART_PALETTE[i % CHART_PALETTE.length];
+            const label = String(item.label || '').slice(0, 6);
+
+            // 막대 자체도 손으로 그린 살짝 삐뚤한 네모!
+            const j = () => (rng() - 0.5) * 2.2;
+            const d = `M ${(x + j()).toFixed(1)} ${(y + j()).toFixed(1)} L ${(x + barW + j()).toFixed(1)} ${(y + j()).toFixed(1)} L ${(x + barW + j()).toFixed(1)} ${(H - padB).toFixed(1)} L ${(x + j()).toFixed(1)} ${(H - padB).toFixed(1)} Z`;
+
+            return `
+              <g class="chart-bar-g">
+                <path d="${d}" fill="${color}" fill-opacity="0.72" />
+                <path d="${d}" fill="url(#${patId})" />
+                <path d="${d}" fill="none" stroke="#3a4250" stroke-width="1.7" stroke-linejoin="round" />
+                <text x="${cx.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="#2c3440">${val}</text>
+                <text x="${cx.toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="13" font-weight="700" fill="#525e6e">${escapeHtml(label)}</text>
+              </g>
+            `;
+          }).join('');
+
+          return `
+            <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto overflow-visible">
+              ${hatchDef}
+              <path d="${yAxis}" fill="none" stroke="#475569" stroke-width="1.8" stroke-linecap="round" />
+              <path d="${xAxis}" fill="none" stroke="#475569" stroke-width="1.8" stroke-linecap="round" />
+              ${bars}
+            </svg>
+          `;
+        }
+
+        // 2) 손그림 꺾은선 그래프
+        if (cd.chartType === 'line') {
+          const vals = items.map(i => Number(i.value) || 0);
+          const maxVal = Math.max(1, ...vals);
+          const minVal = Math.min(0, ...vals);
+          const range = Math.max(1, maxVal - minVal);
+          const padL = 22, padR = 20, padT = 24, padB = 28;
+          const chartW = W - padL - padR;
+          const chartH = H - padT - padB;
+
+          const yAxis = Sketch.line(padL - 6, padT - 6, padL - 6, H - padB + 2, rng, 1.1);
+          const xAxis = Sketch.line(padL - 8, H - padB, W - padR + 6, H - padB, rng, 1.2);
+
+          const pts = items.map((item, i) => ({
+            x: items.length === 1 ? W / 2 : padL + (chartW / (items.length - 1)) * i,
+            y: padT + chartH - (((Number(item.value) || 0) - minVal) / range) * chartH,
+            item
+          }));
+
+          let segs = '';
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p1 = pts[i], p2 = pts[i + 1];
+            segs += `<path d="${Sketch.line(p1.x, p1.y, p2.x, p2.y, rng, 1.4)}" fill="none" stroke="#7c3aed" stroke-width="2.6" stroke-linecap="round" />`;
+          }
+
+          const dots = pts.map(p => `
+            <g>
+              <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4.6" fill="#fffef9" stroke="#3a4250" stroke-width="2.1" />
+              <text x="${p.x.toFixed(1)}" y="${(p.y - 9).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="#5b21b6">${p.item.value}</text>
+              <text x="${p.x.toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="13" font-weight="700" fill="#525e6e">${escapeHtml(String(p.item.label || '').slice(0, 6))}</text>
+            </g>
+          `).join('');
+
+          return `
+            <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto overflow-visible">
+              <path d="${yAxis}" fill="none" stroke="#475569" stroke-width="1.8" stroke-linecap="round" />
+              <path d="${xAxis}" fill="none" stroke="#475569" stroke-width="1.8" stroke-linecap="round" />
+              ${segs}
+              ${dots}
+            </svg>
+          `;
+        }
+
+        // 3) 손그림 원형 도넛 그래프
+        const positives = items.map(i => ({ label: i.label, value: Math.max(0, Number(i.value) || 0) }));
+        const total = positives.reduce((acc, cur) => acc + cur.value, 0);
+        const cx = 78, cy = 79, r = 54, ir = 24;
+
+        let slicesSvg = '';
+        if (total <= 0) {
+          slicesSvg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#e2e8f0" stroke="#3a4250" stroke-width="1.8" /><circle cx="${cx}" cy="${cy}" r="${ir}" fill="#fffef9" stroke="#3a4250" stroke-width="1.6" />`;
+        } else if (positives.filter(p => p.value > 0).length === 1) {
+          const idx = positives.findIndex(p => p.value > 0);
+          slicesSvg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${CHART_PALETTE[idx % CHART_PALETTE.length]}" fill-opacity="0.78" stroke="#3a4250" stroke-width="1.8" /><circle cx="${cx}" cy="${cy}" r="${ir}" fill="#fffef9" stroke="#3a4250" stroke-width="1.6" />`;
+        } else {
+          let angle = -Math.PI / 2;
+          slicesSvg = positives.map((item, i) => {
+            if (item.value <= 0) return '';
+            const sliceAngle = (item.value / total) * Math.PI * 2;
+            const endAngle = angle + sliceAngle;
+            const largeArc = sliceAngle > Math.PI ? 1 : 0;
+
+            const x1 = cx + r * Math.cos(angle);
+            const y1 = cy + r * Math.sin(angle);
+            const x2 = cx + r * Math.cos(endAngle);
+            const y2 = cy + r * Math.sin(endAngle);
+            const ix1 = cx + ir * Math.cos(endAngle);
+            const iy1 = cy + ir * Math.sin(endAngle);
+            const ix2 = cx + ir * Math.cos(angle);
+            const iy2 = cy + ir * Math.sin(angle);
+
+            angle = endAngle;
+            const d = `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(1)} ${y2.toFixed(1)} L ${ix1.toFixed(1)} ${iy1.toFixed(1)} A ${ir} ${ir} 0 ${largeArc} 0 ${ix2.toFixed(1)} ${iy2.toFixed(1)} Z`;
+            return `
+              <path d="${d}" fill="${CHART_PALETTE[i % CHART_PALETTE.length]}" fill-opacity="0.74" />
+              <path d="${d}" fill="url(#${patId})" />
+              <path d="${d}" fill="none" stroke="#3a4250" stroke-width="1.6" stroke-linejoin="round" />
+            `;
+          }).join('');
+        }
+
+        const legend = positives.slice(0, 5).map((item, i) => {
+          const pct = total > 0 ? Math.round((item.value / total) * 100) : 0;
+          const y = 29 + i * 24;
+          return `
+            <g>
+              <rect x="148" y="${y - 10}" width="11" height="11" rx="3" fill="${CHART_PALETTE[i % CHART_PALETTE.length]}" fill-opacity="0.82" stroke="#3a4250" stroke-width="1.3" />
+              <text x="164" y="${y}" font-size="13.5" font-weight="700" fill="#2c3440">${escapeHtml(String(item.label || '').slice(0, 6))}</text>
+              <text x="270" y="${y}" text-anchor="end" font-size="13.5" font-weight="700" fill="#525e6e">${pct}%</text>
+            </g>
+          `;
+        }).join('');
+
+        return `
+          <svg viewBox="0 0 ${W} ${H}" class="w-full h-auto">
+            ${hatchDef}
+            ${slicesSvg}
+            <text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="14" font-weight="700" fill="#2c3440">${total}</text>
+            ${legend}
+          </svg>
+        `;
+      }
+
+      function renderChartBody(node, bodyEl, theme) {
+        const cd = node.chartData || { chartType: 'bar', editing: false, items: [{ label: 'A', value: 30 }] };
+        node.chartData = cd;
+
+        const types = [
+          { key: 'bar', label: '막대' },
+          { key: 'line', label: '선' },
+          { key: 'pie', label: '원형' }
+        ];
+
+        bodyEl.innerHTML = `
+          <div class="p-3.5 flex flex-col flex-1 min-h-0">
+            <div class="flex items-center justify-between gap-2 mb-2 shrink-0">
+              <input type="text" class="node-title-input edit-field w-full bg-transparent text-lg font-bold focus:outline-none truncate" style="color:${theme.text}" value="${escapeHtml(node.title)}" placeholder="그래프 제목" />
+              <div class="flex items-center gap-0.5 bg-[#fffef9] p-0.5 rounded-full border-[1.4px] border-slate-500/60 shrink-0 ui-sans">
+                ${types.map(t => `
+                  <button type="button" data-ctype="${t.key}" class="sketch-btn px-2 py-0.5 rounded-full text-[10px] font-bold ${cd.chartType === t.key ? 'bg-[#2c3440] text-white' : 'text-slate-600 hover:bg-slate-100'}">${t.label}</button>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="chart-canvas flex-1 min-h-[115px] flex items-center justify-center rounded-2xl bg-[#fffef9]/75 border border-dashed border-slate-400/55 p-2 overflow-hidden">
+              ${buildSketchChartSvg(node)}
+            </div>
+
+            <div class="mt-2 flex items-center justify-between ui-sans shrink-0">
+              <button type="button" class="btn-toggle-edit sketch-btn text-[11px] font-bold text-violet-700 px-2.5 py-0.5 rounded-full bg-[#fffef9] border border-slate-400/70">
+                ${cd.editing ? '▲ 값 편집 닫기' : '✎ 값 빠르게 수정'}
+              </button>
+              <span class="text-[11px] text-slate-500">${cd.items.length}개 항목</span>
+            </div>
+
+            ${cd.editing ? `
+              <div class="mt-2 p-2 rounded-2xl bg-[#fffef9]/95 border-[1.4px] border-slate-500/50 space-y-1.5 max-h-40 overflow-y-auto thin-scroll shrink-0">
+                ${cd.items.map((it, idx) => `
+                  <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full shrink-0 border border-slate-700/50" style="background:${CHART_PALETTE[idx % CHART_PALETTE.length]}"></span>
+                    <input type="text" data-cidx="${idx}" data-cfield="label" class="edit-field flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-white border border-slate-300 text-[15px] focus:outline-none focus:border-violet-500" value="${escapeHtml(it.label)}" placeholder="항목명" />
+                    <input type="number" data-cidx="${idx}" data-cfield="value" class="edit-field w-16 px-2 py-0.5 rounded-lg bg-white border border-slate-300 text-[15px] text-right font-bold focus:outline-none focus:border-violet-500" value="${it.value}" />
+                    <button type="button" data-cremove="${idx}" class="sketch-btn w-6 h-6 rounded-full text-slate-400 hover:bg-rose-50 hover:text-rose-500 text-xs">✕</button>
+                  </div>
+                `).join('')}
+                <button type="button" class="btn-add-chart-item sketch-btn ui-sans w-full py-1 rounded-xl bg-violet-100/80 hover:bg-violet-200/80 text-violet-800 text-xs font-bold mt-1">+ 항목 추가</button>
+              </div>
+            ` : ''}
+          </div>
+        `;
+
+        bodyEl.querySelector('.node-title-input').addEventListener('input', (e) => {
+          node.title = e.target.value;
+          scheduleSave();
+        });
+
+        bodyEl.querySelectorAll('button[data-ctype]').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cd.chartType = btn.dataset.ctype;
+            renderChartBody(node, bodyEl, theme);
+            triggerNodeBoing(node.id, 0.75);
+            SoundEngine.play('click');
+            scheduleSave();
+          });
+        });
+
+        bodyEl.querySelector('.btn-toggle-edit').addEventListener('click', (e) => {
+          e.stopPropagation();
+          cd.editing = !cd.editing;
+          // 편집 서랍을 열면 바로 입력할 수 있도록 편집 모드도 활성화
+          selectNode(node.id, cd.editing);
+          renderChartBody(node, bodyEl, theme);
+          const wrapper = nodeElements.get(node.id);
+          if (wrapper) {
+            applyNodeSize(node, wrapper);
+            updateNodeSketch(node, wrapper);
+          }
+          renderEdges();
+          SoundEngine.play('click');
+        });
+
+        if (cd.editing) {
+          bodyEl.querySelectorAll('input[data-cidx]').forEach(inp => {
+            inp.addEventListener('input', () => {
+              const idx = Number(inp.dataset.cidx);
+              const field = inp.dataset.cfield;
+              cd.items[idx][field] = field === 'value' ? (parseFloat(inp.value) || 0) : inp.value;
+              const chartCanvas = bodyEl.querySelector('.chart-canvas');
+              if (chartCanvas) chartCanvas.innerHTML = buildSketchChartSvg(node);
+              scheduleSave();
+            });
+          });
+
+          bodyEl.querySelectorAll('button[data-cremove]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              if (cd.items.length <= 1) return showToast('최소 1개 항목이 필요해요', '📊');
+              pushUndo();
+              cd.items.splice(Number(btn.dataset.cremove), 1);
+              renderChartBody(node, bodyEl, theme);
+              const wrapper = nodeElements.get(node.id);
+              if (wrapper) updateNodeSketch(node, wrapper);
+              renderEdges();
+              SoundEngine.play('delete');
+              scheduleSave();
+            });
+          });
+
+          const addBtn = bodyEl.querySelector('.btn-add-chart-item');
+          if (addBtn) {
+            addBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              pushUndo();
+              cd.items.push({ label: `항목 ${cd.items.length + 1}`, value: Math.floor(Math.random() * 55 + 20) });
+              renderChartBody(node, bodyEl, theme);
+              const wrapper = nodeElements.get(node.id);
+              if (wrapper) updateNodeSketch(node, wrapper);
+              renderEdges();
+              triggerNodeBoing(node.id, 0.65);
+              SoundEngine.play('spawn');
+              scheduleSave();
+            });
+          }
+        }
+      }
+
+      /* -----------------------------------------------------------------------
+         14. 노드 상호작용: 어디를 잡아도 즉시 드래그 + 톡 탭하면 바로 편집!
+         ----------------------------------------------------------------------- */
+      let draggingNodeState = null;
+      let connectingState = null;
+      let resizingState = null;
+      let suppressNextNodeClick = false;
+
+      function bindNodeEvents(node, wrapper) {
+        // 1) 노드 설정 툴바 - 타입 전환 (메모 / 말풍선 / 표 / 그래프)
+        wrapper.querySelectorAll('button[data-switch-type]').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            switchNodeType(node, btn.dataset.switchType);
+          });
+        });
+
+        // 2) 색상 변경
+        wrapper.querySelectorAll('button[data-color]').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            pushUndo();
+            node.color = btn.dataset.color;
+            rerenderSingleNode(node);
+            triggerNodeBoing(node.id, 0.72);
+            SoundEngine.play('click');
+            scheduleSave();
+          });
+        });
+
+        // 3) 가지 추가 / 복제 / 삭제
+        wrapper.querySelector('[data-action="branch"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          const pos = findSmartChildPosition(node, 'right');
+          addNode(node.type === 'mindmap' ? 'mindmap' : 'memo', pos.x, pos.y, { color: node.color }, node.id, true);
+        });
+
+        wrapper.querySelector('[data-action="duplicate"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          const copy = JSON.parse(JSON.stringify(node));
+          delete copy.id;
+          copy.seed = genSeed();
+          addNode(node.type, node.x + 32, node.y + 32, copy, null, false);
+          showToast('손그림 카드를 복제했어요', '✏️');
+        });
+
+        wrapper.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteNode(node.id);
+        });
+
+        // 4) 연결/가지치기 (+) 핸들
+        wrapper.querySelectorAll('.branch-handle').forEach(handle => {
+          handle.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const side = handle.dataset.handle;
+            const rect = getNodeRect(node);
+            const startWorldX = side === 'right' ? rect.x + rect.w : rect.cx;
+            const startWorldY = side === 'right' ? rect.cy : rect.y + rect.h;
+
+            connectingState = {
+              fromId: node.id,
+              side,
+              startScreenX: e.clientX,
+              startScreenY: e.clientY,
+              startWorldX,
+              startWorldY,
+              moved: false,
+              targetNodeId: null
+            };
+          });
+        });
+
+        // 5) 가로·세로 크기 리사이즈 핸들
+        const resizeHandle = wrapper.querySelector('.resize-handle');
+        resizeHandle.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          selectNode(node.id, false);
+          const card = wrapper.querySelector('.node-card');
+          resizingState = {
+            node,
+            wrapper,
+            startX: e.clientX,
+            startY: e.clientY,
+            startW: node.width || wrapper.offsetWidth,
+            startH: card ? card.offsetHeight : wrapper.offsetHeight,
+            moved: false
+          };
+        });
+
+        resizeHandle.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          pushUndo();
+          node.height = null;
+          applyNodeSize(node, wrapper);
+          updateNodeSketch(node, wrapper);
+          renderEdges();
+          triggerNodeBoing(node.id, 0.55);
+          SoundEngine.play('click');
+          scheduleSave();
+          showToast('세로 크기를 내용에 맞게 자동 조절했어요', '✨');
+        });
+
+        // 6) 카드 본체 PointerDown -> 메모·말풍선·표·그래프 상관없이 즉시 드래그 준비!
+        wrapper.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          closeMorePopover();
+
+          // 버튼, 툴바, 핸들 클릭은 각자 이벤트로 처리
+          if (e.target.closest('button, .node-toolbar, .resize-handle, .branch-handle')) {
+            return;
+          }
+
+          // 이미 이 노드를 편집 중이고, 실제로 텍스트 필드 내부를 터치했다면 텍스트 커서/선택을 우선
+          if (state.editingNodeId === node.id && e.target.closest('.edit-field')) {
+            return;
+          }
+
+          // 선택만 먼저 반영 (아직 편집 모드는 켜지 않아 드래그가 방해받지 않음)
+          selectNode(node.id, false);
+
+          const subtreeIds = e.shiftKey ? getSubtreeNodeIds(node.id) : [node.id];
+          const initialPositions = new Map();
+          subtreeIds.forEach(id => {
+            const n = state.nodes.find(item => item.id === id);
+            if (n) initialPositions.set(id, { x: n.x, y: n.y });
+          });
+
+          draggingNodeState = {
+            node,
+            wrapper,
+            pointerId: e.pointerId,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            lastClientX: e.clientX,
+            lastClientY: e.clientY,
+            initialPositions,
+            moved: false
+          };
+
+          // 잡는 순간 쫀득하게 살짝 커짐
+          const p = getPhys(node.id);
+          p.targetSx = 1.035;
+          p.targetSy = 1.035;
+          ensurePhysicsLoop();
+        });
+
+        // 7) 드래그 없이 짧게 탭/클릭했을 때 -> 즉시 해당 입력칸에 포커스하여 편집 모드 진입!
+        wrapper.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (suppressNextNodeClick) return;
+          if (e.target.closest('button, .node-toolbar, .resize-handle, .branch-handle')) return;
+
+          // 이미 편집 중이고 입력 필드를 눌렀다면 그대로 유지
+          if (state.editingNodeId === node.id && e.target.closest('.edit-field')) return;
+
+          // 편집 모드 ON -> edit-field의 pointer-events가 즉시 auto로 바뀜
+          selectNode(node.id, true);
+
+          // 사용자가 정확히 톡 누른 좌표에 있는 입력칸(제목/본문/표 셀 등)을 찾아 바로 포커스!
+          const hitEl = document.elementFromPoint(e.clientX, e.clientY);
+          const field = hitEl?.closest('.edit-field')
+            || (node.type === 'memo' ? wrapper.querySelector('.memo-textarea') : null)
+            || wrapper.querySelector('.edit-field');
+
+          if (field && node.type !== 'chart') {
+            field.focus();
+          } else if (field && hitEl?.closest('.edit-field')) {
+            field.focus();
+          }
+        });
+      }
+
+      function rerenderSingleNode(node) {
+        const oldEl = nodeElements.get(node.id);
+        if (oldEl) {
+          if (nodeResizeObserver) {
+            const oldCard = oldEl.querySelector('.node-card');
+            if (oldCard) nodeResizeObserver.unobserve(oldCard);
+          }
+          oldEl.remove();
+        }
+        renderNode(node, false);
+        renderEdges();
+        updateSelectionUI();
+      }
+
+      function deleteNode(id) {
+        pushUndo();
+        state.nodes = state.nodes.filter(n => n.id !== id);
+        state.edges = state.edges.filter(e => e.from !== id && e.to !== id);
+        const el = nodeElements.get(id);
+        if (el) el.remove();
+        nodeElements.delete(id);
+        nodePhysics.delete(id);
+        if (state.selectedNodeId === id) state.selectedNodeId = null;
+        if (state.editingNodeId === id) state.editingNodeId = null;
+        renderEdges();
+        updateSelectionUI();
+        SoundEngine.play('delete');
+        scheduleSave();
+      }
+
+      function getSubtreeNodeIds(rootId) {
+        const visited = new Set([rootId]);
+        const queue = [rootId];
+        while (queue.length) {
+          const cur = queue.shift();
+          state.edges.forEach(e => {
+            if (e.from === cur && !visited.has(e.to)) {
+              visited.add(e.to);
+              queue.push(e.to);
+            }
+          });
+        }
+        return Array.from(visited);
+      }
+
+      /* -----------------------------------------------------------------------
+         15. 선택 & 편집 상태 UI 동기화
+         ----------------------------------------------------------------------- */
+      function selectNode(id, editing = false) {
+        state.selectedNodeId = id;
+        state.editingNodeId = editing ? id : null;
+        state.selectedEdgeId = null;
+        updateSelectionUI();
+        updateSelectedEdgeButton();
+      }
+
+      function clearSelection() {
+        state.selectedNodeId = null;
+        state.editingNodeId = null;
+        state.selectedEdgeId = null;
+        if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+          document.activeElement.blur();
+        }
+        updateSelectionUI();
+        updateSelectedEdgeButton();
+      }
+
+      function updateSelectionUI() {
+        for (const [id, el] of nodeElements.entries()) {
+          const isSel = id === state.selectedNodeId;
+          const isEdit = id === state.editingNodeId;
+          el.classList.toggle('is-selected', isSel);
+          el.classList.toggle('is-editing', isEdit);
+          el.style.zIndex = isSel ? '25' : '10';
+
+          const toolbar = el.querySelector('.node-toolbar');
+          if (toolbar) toolbar.classList.toggle('hidden', !isSel);
+
+          el.querySelectorAll('.branch-handle').forEach(h => {
+            h.classList.toggle('opacity-100', isSel);
+          });
+        }
+      }
+
+      /* -----------------------------------------------------------------------
+         16. 손그림 마인드맵 곡선 연결선 렌더링
+         ----------------------------------------------------------------------- */
+      function getNodeRect(node) {
+        const el = nodeElements.get(node.id);
+        const w = el ? el.offsetWidth : (node.width || 220);
+        const h = el ? el.offsetHeight : 80;
+        return { x: node.x, y: node.y, w, h, cx: node.x + w / 2, cy: node.y + h / 2 };
+      }
+
+      function computeSketchEdge(r1, r2, seed = 101) {
+        const rng = mulberry32(seed);
+        const dx = r2.cx - r1.cx;
+        const dy = r2.cy - r1.cy;
+
+        let x1, y1, x2, y2, c1x, c1y, c2x, c2y;
+        const pad = 6;
+
+        if (Math.abs(dx) >= Math.abs(dy) * 0.7) {
+          if (dx >= 0) {
+            x1 = r1.x + r1.w + pad; y1 = r1.cy;
+            x2 = r2.x - pad;        y2 = r2.cy;
+          } else {
+            x1 = r1.x - pad;        y1 = r1.cy;
+            x2 = r2.x + r2.w + pad; y2 = r2.cy;
+          }
+          const pull = Math.max(46, Math.abs(x2 - x1) * 0.45);
+          c1x = x1 + (dx >= 0 ? pull : -pull);
+          c1y = y1 + (rng() - 0.5) * 14;
+          c2x = x2 + (dx >= 0 ? -pull : pull);
+          c2y = y2 + (rng() - 0.5) * 14;
+        } else {
+          if (dy >= 0) {
+            x1 = r1.cx; y1 = r1.y + r1.h + pad;
+            x2 = r2.cx; y2 = r2.y - pad;
+          } else {
+            x1 = r1.cx; y1 = r1.y - pad;
+            x2 = r2.cx; y2 = r2.y + r2.h + pad;
+          }
+          const pull = Math.max(42, Math.abs(y2 - y1) * 0.45);
+          c1x = x1 + (rng() - 0.5) * 14;
+          c1y = y1 + (dy >= 0 ? pull : -pull);
+          c2x = x2 + (rng() - 0.5) * 14;
+          c2y = y2 + (dy >= 0 ? -pull : pull);
+        }
+
+        const midX = 0.125 * x1 + 0.375 * c1x + 0.375 * c2x + 0.125 * x2;
+        const midY = 0.125 * y1 + 0.375 * c1y + 0.375 * c2y + 0.125 * y2;
+
+        const d1 = `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+        // 살짝 어긋난 2차 펜선으로 진짜 손그림 화살표 느낌 극대화
+        const d2 = `M ${(x1 + (rng() - 0.5) * 2).toFixed(1)} ${(y1 + (rng() - 0.5) * 2).toFixed(1)} C ${(c1x + (rng() - 0.5) * 5).toFixed(1)} ${(c1y + (rng() - 0.5) * 5).toFixed(1)}, ${(c2x + (rng() - 0.5) * 5).toFixed(1)} ${(c2y + (rng() - 0.5) * 5).toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`;
+        const arrow = Sketch.arrowHead(x2, y2, c2x, c2y, seed);
+
+        return { d1, d2, arrow, midX, midY };
+      }
+
+      function renderEdges() {
+        edgesGroupEl.innerHTML = '';
+
+        state.edges.forEach((edge, idx) => {
+          const fromNode = state.nodes.find(n => n.id === edge.from);
+          const toNode = state.nodes.find(n => n.id === edge.to);
+          if (!fromNode || !toNode) return;
+
+          const curve = computeSketchEdge(getNodeRect(fromNode), getNodeRect(toNode), edge.seed || (idx + 1) * 37);
+          const theme = COLOR_THEMES[fromNode.color] || COLOR_THEMES.paper;
+          const isSel = state.selectedEdgeId === edge.id;
+          const strokeColor = isSel ? '#e11d48' : theme.stroke;
+
+          const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+
+          const p1 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          p1.setAttribute('d', curve.d1);
+          p1.setAttribute('fill', 'none');
+          p1.setAttribute('stroke', strokeColor);
+          p1.setAttribute('stroke-width', isSel ? '3.2' : '2.1');
+          p1.setAttribute('stroke-linecap', 'round');
+          p1.setAttribute('stroke-opacity', isSel ? '1' : '0.78');
+
+          const p2 = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          p2.setAttribute('d', curve.d2);
+          p2.setAttribute('fill', 'none');
+          p2.setAttribute('stroke', strokeColor);
+          p2.setAttribute('stroke-width', '1.1');
+          p2.setAttribute('stroke-linecap', 'round');
+          p2.setAttribute('stroke-opacity', '0.42');
+
+          const head = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          head.setAttribute('d', curve.arrow);
+          head.setAttribute('fill', 'none');
+          head.setAttribute('stroke', strokeColor);
+          head.setAttribute('stroke-width', isSel ? '2.8' : '2.0');
+          head.setAttribute('stroke-linecap', 'round');
+          head.setAttribute('stroke-linejoin', 'round');
+
+          const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          hit.setAttribute('d', curve.d1);
+          hit.setAttribute('fill', 'none');
+          hit.setAttribute('stroke', 'transparent');
+          hit.setAttribute('stroke-width', '20');
+          hit.classList.add('edge-hit');
+          hit.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            state.selectedNodeId = null;
+            state.editingNodeId = null;
+            state.selectedEdgeId = edge.id;
+            updateSelectionUI();
+            renderEdges();
+            updateSelectedEdgeButton();
+            SoundEngine.play('click');
+          });
+
+          g.appendChild(p1);
+          g.appendChild(p2);
+          g.appendChild(head);
+          g.appendChild(hit);
+          edgesGroupEl.appendChild(g);
+        });
+
+        updateSelectedEdgeButton();
+      }
+
+      function updateSelectedEdgeButton() {
+        if (!state.selectedEdgeId) {
+          edgeDeleteBtnEl.classList.add('hidden');
+          return;
+        }
+        const edge = state.edges.find(e => e.id === state.selectedEdgeId);
+        if (!edge) return edgeDeleteBtnEl.classList.add('hidden');
+
+        const n1 = state.nodes.find(n => n.id === edge.from);
+        const n2 = state.nodes.find(n => n.id === edge.to);
+        if (!n1 || !n2) return edgeDeleteBtnEl.classList.add('hidden');
+
+        const curve = computeSketchEdge(getNodeRect(n1), getNodeRect(n2), edge.seed || 101);
+        const pos = worldToScreen(curve.midX, curve.midY);
+        edgeDeleteBtnEl.style.left = `${pos.x - 14}px`;
+        edgeDeleteBtnEl.style.top = `${pos.y - 14}px`;
+        edgeDeleteBtnEl.classList.remove('hidden');
+      }
+
+      edgeDeleteBtnEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!state.selectedEdgeId) return;
+        pushUndo();
+        state.edges = state.edges.filter(ed => ed.id !== state.selectedEdgeId);
+        state.selectedEdgeId = null;
+        renderEdges();
+        SoundEngine.play('delete');
+        scheduleSave();
+      });
+
+      /* -----------------------------------------------------------------------
+         17. 캔버스 배경 클릭 -> 기본 메모 바로 생성! (+ 패닝 & 핀치 줌)
+         ----------------------------------------------------------------------- */
+      const activePointers = new Map();
+      let panState = null;
+      let pinchState = null;
+      let pendingBgClick = null;
+
+      viewportEl.addEventListener('pointerdown', (e) => {
+        if (e.target !== viewportEl && e.target !== worldEl && e.target !== document.getElementById('edges-layer')) {
+          return;
+        }
+
+        // 선택된 노드나 메뉴가 열려있었는지 기록 (열려있었다면 첫 탭은 깔끔하게 닫기/해제!)
+        const hadActiveUI = Boolean(
+          state.selectedNodeId ||
+          state.editingNodeId ||
+          state.selectedEdgeId ||
+          !morePopoverEl.classList.contains('hidden')
+        );
+
+        closeMorePopover();
+        if (hadActiveUI) {
+          clearSelection();
+        }
+
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        // 두 손가락 핀치 줌
+        if (activePointers.size === 2) {
+          panState = null;
+          pendingBgClick = null;
+          const pts = Array.from(activePointers.values());
+          pinchState = {
+            startDist: Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)),
+            startZoom: state.zoom,
+            startPanX: state.panX,
+            startPanY: state.panY,
+            startMidX: (pts[0].x + pts[1].x) / 2,
+            startMidY: (pts[0].y + pts[1].y) / 2
+          };
+          return;
+        }
+
+        // 한 손가락 / 마우스 패닝 또는 빈 배경 클릭 준비
+        panState = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          origPanX: state.panX,
+          origPanY: state.panY,
+          moved: false,
+          hadActiveUI
+        };
+        viewportEl.classList.add('is-panning');
+      });
+
+      window.addEventListener('pointermove', (e) => {
+        if (activePointers.has(e.pointerId)) {
+          activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        }
+
+        // 1) 두 손가락 핀치 줌
+        if (pinchState && activePointers.size === 2) {
+          const pts = Array.from(activePointers.values());
+          const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          const midX = (pts[0].x + pts[1].x) / 2;
+          const midY = (pts[0].y + pts[1].y) / 2;
+
+          const newZoom = clamp(pinchState.startZoom * (dist / pinchState.startDist), 0.28, 2.4);
+          const ratio = newZoom / pinchState.startZoom;
+
+          state.zoom = newZoom;
+          state.panX = midX - (pinchState.startMidX - pinchState.startPanX) * ratio;
+          state.panY = midY - (pinchState.startMidY - pinchState.startPanY) * ratio;
+          updateViewportTransform();
+          return;
+        }
+
+        // 2) 배경 패닝
+        if (panState && panState.pointerId === e.pointerId) {
+          const dx = e.clientX - panState.startX;
+          const dy = e.clientY - panState.startY;
+          if (Math.hypot(dx, dy) > 5) panState.moved = true;
+          if (panState.moved) {
+            state.panX = panState.origPanX + dx;
+            state.panY = panState.origPanY + dy;
+            updateViewportTransform();
+          }
+          return;
+        }
+
+        // 3) 노드 즉시 드래그 (메모/말풍선/표/그래프 모두 동일하게 스무스!)
+        if (draggingNodeState && draggingNodeState.pointerId === e.pointerId) {
+          const dxScreen = e.clientX - draggingNodeState.startClientX;
+          const dyScreen = e.clientY - draggingNodeState.startClientY;
+
+          if (!draggingNodeState.moved && Math.hypot(dxScreen, dyScreen) > 5) {
+            draggingNodeState.moved = true;
+            pushUndo();
+            if (document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+              document.activeElement.blur();
+            }
+          }
+
+          if (draggingNodeState.moved) {
+            const dxWorld = dxScreen / state.zoom;
+            const dyWorld = dyScreen / state.zoom;
+
+            draggingNodeState.initialPositions.forEach((orig, id) => {
+              const target = state.nodes.find(n => n.id === id);
+              if (target) {
+                target.x = Math.round(orig.x + dxWorld);
+                target.y = Math.round(orig.y + dyWorld);
+                const el = nodeElements.get(id);
+                if (el && id !== draggingNodeState.node.id) {
+                  el.style.transform = `translate3d(${target.x}px, ${target.y}px, 0)`;
+                }
+              }
+            });
+
+            // 드래그 속도에 맞춘 뽀잉 젤리 기울기
+            const vx = e.clientX - draggingNodeState.lastClientX;
+            const vy = e.clientY - draggingNodeState.lastClientY;
+            const p = getPhys(draggingNodeState.node.id);
+            p.targetRot = clamp(vx * 0.44, -8, 8);
+            const speed = Math.min(28, Math.hypot(vx, vy));
+            p.targetSx = 1.035 + speed * 0.0022;
+            p.targetSy = 1.035 - speed * 0.0018;
+            ensurePhysicsLoop();
+
+            draggingNodeState.lastClientX = e.clientX;
+            draggingNodeState.lastClientY = e.clientY;
+            renderEdges();
+          }
+          return;
+        }
+
+        // 4) 가로·세로 리사이즈
+        if (resizingState) {
+          const dx = (e.clientX - resizingState.startX) / state.zoom;
+          const dy = (e.clientY - resizingState.startY) / state.zoom;
+          if (!resizingState.moved && Math.hypot(dx, dy) > 3) {
+            resizingState.moved = true;
+            pushUndo();
+          }
+          if (resizingState.moved) {
+            const minHMap = { mindmap: 56, memo: 92, table: 150, chart: 210 };
+            const minH = minHMap[resizingState.node.type] || 80;
+            const newW = clamp(Math.round(resizingState.startW + dx), 150, 680);
+            const newH = clamp(Math.round(resizingState.startH + dy), minH, 680);
+            resizingState.node.width = newW;
+            resizingState.node.height = newH;
+            applyNodeSize(resizingState.node, resizingState.wrapper);
+            updateNodeSketch(resizingState.node, resizingState.wrapper);
+            renderEdges();
+          }
+          return;
+        }
+
+        // 5) 고무줄 연결선 드래그
+        if (connectingState) {
+          if (Math.hypot(e.clientX - connectingState.startScreenX, e.clientY - connectingState.startScreenY) > 8) {
+            connectingState.moved = true;
+          }
+          if (connectingState.moved) {
+            const curWorld = screenToWorld(e.clientX, e.clientY);
+            const dx = curWorld.x - connectingState.startWorldX;
+            const pull = Math.max(40, Math.abs(dx) * 0.45);
+            const d = `M ${connectingState.startWorldX} ${connectingState.startWorldY} C ${connectingState.startWorldX + (dx >= 0 ? pull : -pull)} ${connectingState.startWorldY}, ${curWorld.x + (dx >= 0 ? -pull : pull)} ${curWorld.y}, ${curWorld.x} ${curWorld.y}`;
+            tempEdgeEl.setAttribute('d', d);
+            tempEdgeEl.classList.remove('hidden');
+
+            let foundId = null;
+            for (const n of state.nodes) {
+              if (n.id === connectingState.fromId) continue;
+              const r = getNodeRect(n);
+              if (curWorld.x >= r.x - 16 && curWorld.x <= r.x + r.w + 16 && curWorld.y >= r.y - 16 && curWorld.y <= r.y + r.h + 16) {
+                foundId = n.id;
+                break;
+              }
+            }
+            connectingState.targetNodeId = foundId;
+            for (const [id, el] of nodeElements.entries()) {
+              el.classList.toggle('is-drop-target', id === foundId);
+            }
+          }
+        }
+      });
+
+      function handlePointerEnd(e) {
+        activePointers.delete(e.pointerId);
+
+        if (pinchState && activePointers.size < 2) {
+          pinchState = null;
+          scheduleSave();
+        }
+
+        // 빈 배경 패닝/클릭 종료
+        if (panState && panState.pointerId === e.pointerId) {
+          const { moved, hadActiveUI } = panState;
+          panState = null;
+          viewportEl.classList.remove('is-panning');
+          if (moved) {
+            scheduleSave();
+          } else if (!hadActiveUI) {
+            // 빈 배경을 깔끔하게 클릭/탭 -> click 이벤트에서 바로 메모 생성!
+            pendingBgClick = { x: e.clientX, y: e.clientY };
+          }
+        }
+
+        // 노드 드래그 종료 -> 뽀잉 착지!
+        if (draggingNodeState && draggingNodeState.pointerId === e.pointerId) {
+          const { node, moved } = draggingNodeState;
+          draggingNodeState = null;
+          const p = getPhys(node.id);
+          p.targetSx = 1;
+          p.targetSy = 1;
+          p.targetRot = 0;
+
+          if (moved) {
+            suppressNextNodeClick = true;
+            setTimeout(() => { suppressNextNodeClick = false; }, 60);
+            triggerNodeBoing(node.id, 0.98);
+            SoundEngine.play('boing');
+            scheduleSave();
+          } else {
+            ensurePhysicsLoop();
+          }
+        }
+
+        // 리사이즈 종료
+        if (resizingState) {
+          const rs = resizingState;
+          resizingState = null;
+          if (rs.moved) {
+            triggerNodeBoing(rs.node.id, 0.45);
+            SoundEngine.play('click');
+            scheduleSave();
+          }
+        }
+
+        // 연결선 드래그 종료
+        if (connectingState) {
+          const cs = connectingState;
+          connectingState = null;
+          tempEdgeEl.classList.add('hidden');
+          for (const el of nodeElements.values()) el.classList.remove('is-drop-target');
+
+          const fromNode = state.nodes.find(n => n.id === cs.fromId);
+          if (!fromNode) return;
+
+          if (!cs.moved) {
+            const pos = findSmartChildPosition(fromNode, cs.side);
+            addNode(fromNode.type === 'mindmap' ? 'mindmap' : 'memo', pos.x, pos.y, { color: fromNode.color }, fromNode.id, true);
+          } else if (cs.targetNodeId) {
+            const exists = state.edges.some(ed =>
+              (ed.from === cs.fromId && ed.to === cs.targetNodeId) ||
+              (ed.from === cs.targetNodeId && ed.to === cs.fromId)
+            );
+            if (!exists) {
+              pushUndo();
+              state.edges.push({ id: genId('e'), from: cs.fromId, to: cs.targetNodeId, seed: genSeed() });
+              renderEdges();
+              triggerNodeBoing(cs.targetNodeId, 1.0);
+              SoundEngine.play('boing');
+              scheduleSave();
+            }
+          } else {
+            const dropWorld = screenToWorld(e.clientX, e.clientY);
+            addNode(fromNode.type === 'mindmap' ? 'mindmap' : 'memo', dropWorld.x - 105, dropWorld.y - 45, { color: fromNode.color }, fromNode.id, true);
+          }
+        }
+      }
+
+      window.addEventListener('pointerup', handlePointerEnd);
+      window.addEventListener('pointercancel', handlePointerEnd);
+
+      // 배경 클릭 -> 그 자리에 기본 손그림 메모가 뽀잉! 생성 (click 이벤트 내에서 포커스하므로 모바일 키보드도 완벽 동작)
+      viewportEl.addEventListener('click', (e) => {
+        if (!pendingBgClick) return;
+        const { x, y } = pendingBgClick;
+        pendingBgClick = null;
+
+        if (e.target !== viewportEl && e.target !== worldEl && e.target !== document.getElementById('edges-layer')) {
+          return;
+        }
+
+        const worldPos = screenToWorld(x, y);
+        addNode('memo', worldPos.x - 118, worldPos.y - 54, {
+          color: 'lemon',
+          title: '',
+          content: ''
+        }, null, true);
+      });
+
+      // 마우스 휠 줌 (PC)
+      viewportEl.addEventListener('wheel', (e) => {
+        const scrollable = e.target.closest('.thin-scroll');
+        if (scrollable && scrollable.scrollHeight > scrollable.clientHeight) return;
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.1 : 0.91;
+        zoomAt(e.clientX, e.clientY, state.zoom * factor);
+      }, { passive: false });
+
+      /* -----------------------------------------------------------------------
+         18. 마인드맵 자동 정렬
+         ----------------------------------------------------------------------- */
+      function autoArrangeMindmap() {
+        if (!state.nodes.length) return;
+        pushUndo();
+
+        const hasParent = new Set(state.edges.map(e => e.to));
+        let roots = state.nodes.filter(n => !hasParent.has(n.id));
+        if (!roots.length) roots = [state.nodes[0]];
+
+        const visited = new Set();
+        let currentRootY = 80;
+
+        function layoutSubtree(nodeId, x, yStart) {
+          visited.add(nodeId);
+          const node = state.nodes.find(n => n.id === nodeId);
+          const rect = getNodeRect(node);
+          const children = state.edges
+            .filter(e => e.from === nodeId && !visited.has(e.to))
+            .map(e => e.to);
+
+          if (!children.length) {
+            node.x = Math.round(x);
+            node.y = Math.round(yStart);
+            return yStart + rect.h + 48;
+          }
+
+          let cursorY = yStart;
+          const childYs = [];
+          children.forEach(cid => {
+            const cNode = state.nodes.find(n => n.id === cid);
+            const beforeY = cursorY;
+            cursorY = layoutSubtree(cid, x + rect.w + 96, cursorY);
+            childYs.push(cNode.y + getNodeRect(cNode).h / 2);
+            if (cursorY === beforeY) cursorY += 100;
+          });
+
+          const avgCenterY = (childYs[0] + childYs[childYs.length - 1]) / 2;
+          node.x = Math.round(x);
+          node.y = Math.round(avgCenterY - rect.h / 2);
+          return Math.max(cursorY, node.y + rect.h + 48);
+        }
+
+        roots.forEach(r => {
+          if (!visited.has(r.id)) {
+            currentRootY = layoutSubtree(r.id, 80, currentRootY) + 42;
+          }
+        });
+
+        state.nodes.forEach(n => {
+          if (!visited.has(n.id)) {
+            n.x = 80;
+            n.y = currentRootY;
+            currentRootY += getNodeRect(n).h + 50;
+          }
+        });
+
+        state.nodes.forEach(n => {
+          const el = nodeElements.get(n.id);
+          if (el) el.style.transform = `translate3d(${n.x}px, ${n.y}px, 0)`;
+          triggerNodeBoing(n.id, 0.85);
+        });
+
+        renderEdges();
+        fitView(true);
+        SoundEngine.play('boing');
+        scheduleSave();
+        showToast('마인드맵을 깔끔하게 정리했어요!', '✨');
+      }
+
+      /* -----------------------------------------------------------------------
+         19. 우측 상단 초미니 메뉴 & 키보드 단축키
+         ----------------------------------------------------------------------- */
+      function closeMorePopover() {
+        morePopoverEl.classList.add('hidden');
+      }
+
+      document.getElementById('btn-more').addEventListener('click', (e) => {
+        e.stopPropagation();
+        morePopoverEl.classList.toggle('hidden');
+        SoundEngine.play('click');
+      });
+
+      document.getElementById('btn-undo').addEventListener('click', () => {
+        closeMorePopover();
+        performUndo();
+      });
+
+      document.getElementById('btn-redo').addEventListener('click', () => {
+        closeMorePopover();
+        performRedo();
+      });
+
+      document.getElementById('btn-fit').addEventListener('click', () => {
+        closeMorePopover();
+        SoundEngine.play('click');
+        fitView(true);
+      });
+
+      document.getElementById('btn-auto-layout').addEventListener('click', () => {
+        closeMorePopover();
+        autoArrangeMindmap();
+      });
+
+      document.getElementById('btn-sound').addEventListener('click', () => {
+        SoundEngine.enabled = !SoundEngine.enabled;
+        const statusEl = document.getElementById('sound-status');
+        statusEl.textContent = SoundEngine.enabled ? 'ON' : 'OFF';
+        statusEl.className = SoundEngine.enabled ? 'text-[11px] font-bold text-sky-600' : 'text-[11px] font-bold text-slate-400';
+        if (SoundEngine.enabled) SoundEngine.play('spawn');
+      });
+
+      document.getElementById('btn-export').addEventListener('click', () => {
+        closeMorePopover();
+        exportBoardToFile();
+      });
+
+      // 점 3개 메뉴 내 저장 / 불러오기 버튼
+      document.getElementById('btn-save-browser').addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeMorePopover();
+        saveCurrentToBrowser({ asNew: false });
+      });
+
+      document.getElementById('btn-open-storage').addEventListener('click', (e) => {
+        e.stopPropagation();
+        openStorageModal();
+      });
+
+      // 보관함 모달 이벤트
+      document.getElementById('storage-close-btn').addEventListener('click', () => {
+        SoundEngine.play('click');
+        closeStorageModal();
+      });
+
+      storageModalEl.addEventListener('click', (e) => {
+        if (e.target === storageModalEl) closeStorageModal();
+      });
+
+      document.getElementById('btn-modal-save-new').addEventListener('click', () => {
+        const typedName = storageNameInputEl.value.trim();
+        saveCurrentToBrowser({ asNew: true, customName: typedName });
+        storageNameInputEl.value = state.currentBoardName;
+      });
+
+      storageNameInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('btn-modal-save-new').click();
+        }
+      });
+
+      document.getElementById('btn-modal-export-file').addEventListener('click', () => {
+        exportBoardToFile();
+      });
+
+      const fileInput = document.getElementById('file-import-input');
+      document.getElementById('btn-import').addEventListener('click', () => {
+        closeMorePopover();
+        fileInput.value = '';
+        fileInput.click();
+      });
+
+      document.getElementById('btn-modal-import-file').addEventListener('click', () => {
+        fileInput.value = '';
+        fileInput.click();
+      });
+
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const parsed = JSON.parse(reader.result);
+            if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) throw new Error();
+            pushUndo();
+            state.nodes = parsed.nodes;
+            state.edges = parsed.edges;
+            state.currentSlotId = null;
+            state.currentBoardName = (parsed.name || file.name.replace(/\.json$/i, '')).trim();
+            clearSelection();
+            renderAll();
+            if (typeof parsed.panX === 'number' && typeof parsed.panY === 'number' && typeof parsed.zoom === 'number') {
+              state.panX = parsed.panX;
+              state.panY = parsed.panY;
+              state.zoom = clamp(parsed.zoom, 0.28, 2.4);
+              updateViewportTransform();
+            } else {
+              fitView(true);
+            }
+            closeStorageModal();
+            saveWorkingStateNow();
+            SoundEngine.play('spawn');
+            showToast(`"${state.currentBoardName}" 파일을 불러왔어요!`, '📂');
+          } catch (err) {
+            showToast('올바른 파일이 아니에요', '⚠️');
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      document.getElementById('btn-load-sample').addEventListener('click', () => {
+        closeMorePopover();
+        showConfirm({
+          title: '예시 스케치를 불러올까요?',
+          desc: '현재 내용은 되돌리기로 복구할 수 있어요.',
+          icon: '✏️',
+          okText: '불러오기',
+          onConfirm: () => {
+            pushUndo();
+            loadStarterTemplate();
+            SoundEngine.play('spawn');
+            showToast('손그림 예시가 뽀잉! 열렸어요', '✨');
+          }
+        });
+      });
+
+      document.getElementById('btn-clear-all').addEventListener('click', () => {
+        closeMorePopover();
+        showConfirm({
+          title: '모눈종이를 깨끗이 비울까요?',
+          desc: '빈 종이를 클릭하면 언제든 새 메모가 뽀잉 생겨요!',
+          icon: '🧹',
+          okText: '비우기',
+          onConfirm: () => {
+            pushUndo();
+            state.nodes = [];
+            state.edges = [];
+            clearSelection();
+            renderAll();
+            scheduleSave();
+            SoundEngine.play('delete');
+            showToast('깨끗한 모눈종이만 남겼어요!', '✏️');
+          }
+        });
+      });
+
+      window.addEventListener('keydown', (e) => {
+        const activeTag = document.activeElement?.tagName;
+        const isTyping = activeTag === 'INPUT' || activeTag === 'TEXTAREA';
+
+        // Ctrl+S / Cmd+S -> 브라우저에 저장
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+          e.preventDefault();
+          saveCurrentToBrowser({ asNew: false });
+          return;
+        }
+
+        // Ctrl+Z -> 되돌리기 / Ctrl+Y (또는 Ctrl+Shift+Z) -> 다시 실행
+        if ((e.ctrlKey || e.metaKey) && !isTyping) {
+          const key = e.key.toLowerCase();
+          if (key === 'y' || (key === 'z' && e.shiftKey)) {
+            e.preventDefault();
+            performRedo();
+            return;
+          }
+          if (key === 'z') {
+            e.preventDefault();
+            performUndo();
+            return;
+          }
+        }
+
+        if (e.key === 'Escape') {
+          closeMorePopover();
+          closeStorageModal();
+          clearSelection();
+          return;
+        }
+
+        if (isTyping) return;
+
+        if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedNodeId) {
+          e.preventDefault();
+          deleteNode(state.selectedNodeId);
+        } else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedEdgeId) {
+          e.preventDefault();
+          pushUndo();
+          state.edges = state.edges.filter(ed => ed.id !== state.selectedEdgeId);
+          state.selectedEdgeId = null;
+          renderEdges();
+          SoundEngine.play('delete');
+          scheduleSave();
+        } else if (e.key === 'Tab' && state.selectedNodeId) {
+          e.preventDefault();
+          const parent = state.nodes.find(n => n.id === state.selectedNodeId);
+          if (parent) {
+            const pos = findSmartChildPosition(parent, 'right');
+            addNode(parent.type === 'mindmap' ? 'mindmap' : 'memo', pos.x, pos.y, { color: parent.color }, parent.id, true);
+          }
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        updateSelectedEdgeButton();
+      });
+
+      /* -----------------------------------------------------------------------
+         20. 첫 실행용 손그림 스타터 스케치
+         ----------------------------------------------------------------------- */
+      function loadStarterTemplate() {
+        const rootId = 'n_root';
+        const memoId = 'n_memo';
+        const tableId = 'n_table';
+        const chartId = 'n_chart';
+
+        state.nodes = [
+          {
+            id: rootId,
+            seed: 1024,
+            type: 'mindmap',
+            x: 80,
+            y: 230,
+            width: 205,
+            color: 'sky',
+            title: '✏️ 아이디어 스케치'
+          },
+          {
+            id: memoId,
+            seed: 2048,
+            type: 'memo',
+            x: 380,
+            y: 55,
+            width: 255,
+            color: 'lemon',
+            title: '이렇게 써보세요!',
+            content: '• 빈 모눈종이를 클릭하면 메모가 바로 뽀잉!\n• 어느 카드든 잡으면 바로 드래그, 톡 누르면 입력\n• 위 설정 바에서 메모↔말풍선↔표↔그래프 변환!'
+          },
+          {
+            id: tableId,
+            seed: 3072,
+            type: 'table',
+            x: 380,
+            y: 260,
+            width: 295,
+            color: 'mint',
+            title: '주간 목표 체크',
+            tableData: {
+              headers: ['할 일', '달성', '메모'],
+              rows: [
+                ['기획', '95', '완료'],
+                ['스케치', '80', '재밌음'],
+                ['정리', '60', '진행중']
+              ]
+            }
+          },
+          {
+            id: chartId,
+            seed: 4096,
+            type: 'chart',
+            x: 760,
+            y: 220,
+            width: 300,
+            color: 'lavender',
+            title: '달성률 그래프',
+            chartData: {
+              chartType: 'bar',
+              editing: false,
+              items: [
+                { label: '기획', value: 95 },
+                { label: '스케치', value: 80 },
+                { label: '정리', value: 60 }
+              ]
+            }
+          }
+        ];
+
+        state.edges = [
+          { id: 'e_1', from: rootId, to: memoId, seed: 501 },
+          { id: 'e_2', from: rootId, to: tableId, seed: 502 },
+          { id: 'e_3', from: tableId, to: chartId, seed: 503 }
+        ];
+
+        renderAll();
+        setTimeout(() => fitView(false), 50);
+        scheduleSave();
+      }
+
+      /* -----------------------------------------------------------------------
+         21. 앱 초기화
+         ----------------------------------------------------------------------- */
+      function init() {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+              state.nodes = parsed.nodes;
+              state.edges = parsed.edges;
+              state.panX = typeof parsed.panX === 'number' ? parsed.panX : 0;
+              state.panY = typeof parsed.panY === 'number' ? parsed.panY : 0;
+              state.zoom = typeof parsed.zoom === 'number' ? clamp(parsed.zoom, 0.28, 2.4) : 1;
+              state.currentSlotId = parsed.currentSlotId || null;
+              state.currentBoardName = parsed.currentBoardName || '';
+              renderAll();
+              updateViewportTransform();
+              updateUndoButton();
+              return;
+            }
+          }
+        } catch (e) {
+          // 저장 데이터 오류 시 기본 스케치로 복구
+        }
+
+        loadStarterTemplate();
+        updateUndoButton();
+      }
+
+      window.addEventListener('DOMContentLoaded', init);
+    })();
+  </script>
+</body>
+</html>
